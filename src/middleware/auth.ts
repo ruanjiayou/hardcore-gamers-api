@@ -4,9 +4,11 @@
 
 import type { Socket } from 'socket.io';
 import ioredis from 'ioredis'
+import jwt from 'jsonwebtoken'
 import { userService } from '../services/UserService';
 import redis from '../utils/redis'
 import { MPlayer } from '../models';
+import config from '../config';
 
 export interface AuthSocket extends Socket {
   user_id?: string;
@@ -29,31 +31,37 @@ export function validateCredentials(username: string, password: string): boolean
  * Socket.io 认证中间件
  */
 export async function authMiddleware(socket: AuthSocket, next: (err?: Error) => void) {
-  const user_id = socket.handshake.auth.user_id || socket.handshake.query.user_id;
-  const isGuest = socket.handshake.auth.isGuest === true;
-  const isLoggedIn = socket.handshake.auth.isLoggedIn === true;
+  const token = socket.handshake.auth.token || socket.handshake.query.token;
+  let user_id = socket.handshake.auth.user_id || socket.handshake.query.user_id || '';
 
-  if (!user_id) {
-    return next(new Error('用户id不能为空'));
+  if (token) {
+    try {
+      const data: any = jwt.verify(token, config.secret)
+      user_id = data._id;
+      socket.isLoggedIn = true;
+      socket.isGuest = false;
+    } catch (err) {
+      return next(new Error('账号已过期'))
+    }
+  } else if (user_id) {
+    socket.isGuest = true;
+    socket.isLoggedIn = true;
+  } else {
+    return next(new Error('请登陆'))
   }
-
   // 获取或创建玩家
   const user = await userService.getInfoById(user_id);
   if (!user) {
     return next(new Error('验证失败'))
   }
   socket.user_id = user_id;
-  socket.isLoggedIn = isLoggedIn;
-  socket.isGuest = isGuest;
   socket.redis = redis
   const player = await MPlayer.findOne({ user_id }).lean(true);
   if (player && player.room_id) {
     socket.join(`room:${player.room_id}`)
   }
 
-  console.log(
-    `🔐 玩家认证成功: ${user.name} (${user._id}) | 状态: ${isLoggedIn ? '登陆' : '游客'}`
-  );
+  console.log(`🔐 玩家认证成功: ${user.name} (${user._id}) | 状态: ${socket.isGuest ? '登陆' : '游客'}`);
 
   next();
 }

@@ -17,6 +17,12 @@ const constant = {
       deleted: 'deleted',
     }
   },
+  MATCH: {
+    STATUS: {
+      playing: 'playing',
+      finished: 'finished',
+    }
+  },
   USER: {
     STATUS: {
       normal: 1,
@@ -30,6 +36,12 @@ const constant = {
       ready: 'ready',
       playing: 'playing',
       matching: 'matching',
+    }
+  },
+  MEMBER: {
+    TYPE: {
+      player: 'player',
+      viewer: 'viewer'
     }
   }
 }

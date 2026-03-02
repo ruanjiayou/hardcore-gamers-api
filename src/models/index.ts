@@ -28,7 +28,7 @@ export const MRoom = mongoose.model<IRoom>('rooms', new mongoose.Schema({
   name: String,
   status: String,
   owner_id: String,
-  players: [{
+  members: [{
     _id: String,
     user_name: String,
     title: String,
@@ -40,9 +40,9 @@ export const MRoom = mongoose.model<IRoom>('rooms', new mongoose.Schema({
     avatar: String,
     role: String,
     team: String,
+    type: String,
   }],
   seats: [{ _id: false, team: String, size: Number }],
-  state: mongoose.SchemaTypes.Mixed,
   numbers: { min: Number, max: Number },
   isPrivate: Boolean,
   password: String,
@@ -53,7 +53,16 @@ export const MRoom = mongoose.model<IRoom>('rooms', new mongoose.Schema({
 }, { collection: 'rooms', versionKey: false, }));
 
 export const MMatch = mongoose.model('matches', new mongoose.Schema({
-
+  _id: String,
+  game_id: String,
+  room_id: String,
+  status: String,
+  state: mongoose.SchemaTypes.Mixed,
+  players: [{ _id: String, role: String, score: Number, is_winner: Boolean }],
+  movements: [{ _id: false, player_id: String, data: mongoose.SchemaTypes.Mixed, timestamp: Number, }],
+  createdAt: Date, // 开始时间
+  updatedAt: Date, // 结束时间
+  stats: mongoose.SchemaTypes.Mixed, // 
 }, { collection: 'matches', versionKey: false }))
 
 export const MUser = mongoose.model<IUser>('users', new mongoose.Schema({
@@ -86,8 +95,9 @@ export const MPlayer = mongoose.model<IPlayer>('players', new mongoose.Schema({
 }, { collection: 'players', versionKey: false }))
 
 export default {
+  MUser,
   MGame,
   MRoom,
-  MUser,
+  MMatch,
   MPlayer,
 }

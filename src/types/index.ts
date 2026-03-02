@@ -33,9 +33,8 @@ export interface IRoom {
   name: string;
   status: string; // 'waiting' | 'ready' | 'playing' | 'closed'
   owner_id: string;
-  players: IRoomPlayer[];
+  members: IMember[];
   seats: ISeat[],
-  state: Object,
   numbers: { min: number, max: number };
   isPrivate: boolean;
   password?: string;  // 新增：房间密码
@@ -73,20 +72,22 @@ export interface IPlayer {
   level: number; // 等级
   score: number; // 分数
   exp: number; // 经验值
+  max_level: number;
   stats: PlayerStats;
   online: boolean;
   status: number; // 1 normal 2 muted 3 banned
   createdAt: Date;
   updatedAt: Date;
 }
-export interface IRoomPlayer extends IPlayer {
-  state: string; 
+export interface IMember extends IPlayer {
+  type: string;
+  state: string;
   is_robot: boolean; // 是否是人机
   role?: string; // 角色
 }
 
 export interface PlayerStats {
-  games: number;
+  matches: number;
   winnings: number;
   wins_rate: number;
   flee_rate: number;

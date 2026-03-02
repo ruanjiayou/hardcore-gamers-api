@@ -22,7 +22,7 @@ export class OAuthService {
       throw new Error('账号或密码错误')
     }
     const token = {
-      access_token: jwt.sign(pick(user, ['_id', 'name', 'avatar']), 'test', { expiresIn: '30h' }),
+      access_token: jwt.sign(pick(user, ['_id', 'name']), 'test', { expiresIn: '30h', jwtid: v7() }),
       refresh_token: '',
     }
     return { user: omit(user, ['pass']), token };
@@ -36,7 +36,7 @@ export class OAuthService {
       await MUser.create({ ...result.data, _id, });
       const user = await MUser.findById(_id).lean(true);
       const token = {
-        access_token: jwt.sign(pick(user, ['_id', 'name', 'avatar']), 'test', { expiresIn: '30h' }),
+        access_token: jwt.sign(pick(user, ['_id', 'name']), 'test', { expiresIn: '30h', jwtid: v7() }),
         refresh_token: '',
       }
       return { user: omit(user, ['pass']), token };

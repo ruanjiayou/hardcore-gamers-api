@@ -20,7 +20,7 @@ export class UserService {
     const key = config.prefix + 'stats:users'
     let stats: { [key: string]: string | number } = await redis.hgetall(key)
     if (isEmpty(stats)) {
-      const total = 0; //await MUser.countDocuments();
+      const total = await MUser.countDocuments();
       stats = { total }
       await redis.pipeline().hmset(key, stats).expire(key, config.expires).exec()
     }
