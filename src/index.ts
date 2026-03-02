@@ -107,13 +107,15 @@ io.on('connection', (socket: AuthSocket) => {
    * 心跳检测
    */
   socket.on('ping', (callback) => {
+    console.log('ping')
     callback({ timestamp: Date.now() });
   });
 
   /**
    * 断开连接处理
    */
-  socket.on('disconnect', () => {
+  socket.on('disconnect', (reason) => {
+    console.log(reason)
     // 更新玩家状态
     // playerService.updatePlayerStatus(user_id, 'online'); // 实际应该设置为离线，但这里简化处理
 

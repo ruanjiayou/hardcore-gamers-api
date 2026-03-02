@@ -21,24 +21,24 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
   socket.on('room:surrender', surrender);
   socket.on('room:close', closeRoom)
 
-  async function getRoomInfo(data: { roomId: string }, cb: CB) {
-    const { roomId } = data;
-    const roomInfo = await roomService.getRoomById(roomId);
+  async function getRoomInfo(data: { room_id: string }, cb: CB) {
+    const { room_id } = data;
+    const roomInfo = await roomService.getRoomById(room_id);
     cb(roomInfo);
   }
   /**
    * 发送房间消息
    * @description 判断条件是否满足,向房间发送消息同步数据
    */
-  async function sendMessage(data: { roomId: string; message: string }, callback: (success: boolean) => void) {
-    console.log(`玩家发言 ${data.roomId} ${data.message}`)
+  async function sendMessage(data: { room_id: string; message: string }, callback: (success: boolean) => void) {
+    console.log(`玩家发言 ${data.room_id} ${data.message}`)
     if (!socket.isLoggedIn) {
       callback(false);
       return;
     }
 
-    const { roomId, message } = data;
-    const room = await roomService.getRoomById(roomId);
+    const { room_id, message } = data;
+    const room = await roomService.getRoomById(room_id);
     if (!room || !message) {
       callback(false);
       return;
@@ -52,7 +52,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     callback(true);
 
     console.log('广播')
-    io.to(`room:${roomId}`).emit('room:message', {
+    io.to(`room:${room_id}`).emit('room:message', {
       player_id: player._id,
       player_name: player.user_name,
       message,
@@ -64,20 +64,20 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    * 房主开始游戏
    * @description 判断条件是否满足,修改房间状态,分配位置,向房间发送通知(初始状态数据和玩家分配信息)
    */
-  async function startGame(data: { roomId: string, player_id: string }, callback: (success: boolean, error?: string) => void) {
+  async function startGame(data: { room_id: string, player_id: string }, callback: (success: boolean, error?: string) => void) {
     if (!socket.isLoggedIn) {
       callback(false, '需要登陆');
       return;
     }
 
-    const { roomId } = data;
-    const room = await roomService.getRoomById(roomId);
+    const { room_id } = data;
+    const room = await roomService.getRoomById(room_id);
     if (!room) {
       callback(false, '房间或玩家不存在');
       return;
     }
     try {
-      const started = await roomService.startGame(roomId, data.player_id);
+      const started = await roomService.startGame(room_id, data.player_id);
       if (!started) {
         callback(false, '开始游戏失败');
         return;
@@ -85,8 +85,8 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
 
       callback(true);
 
-      io.to(`room:${roomId}`).emit('room:game-started', {
-        roomId,
+      io.to(`room:${room_id}`).emit('room:game-started', {
+        room_id,
         playerCount: room.members.length,
         timestamp: Date.now()
       });
@@ -99,15 +99,15 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
   /**
    * 房主踢出玩家
    */
-  async function kickPlayer(data: { roomId: string; player_id: string }, callback: (success: boolean) => void) {
+  async function kickPlayer(data: { room_id: string; player_id: string }, callback: (success: boolean) => void) {
     const user_id = socket.user_id || '';
     if (!socket.isLoggedIn || !user_id) {
       callback(false);
       return;
     }
 
-    const { roomId, player_id } = data;
-    const room = await roomService.getRoomById(roomId);
+    const { room_id, player_id } = data;
+    const room = await roomService.getRoomById(room_id);
 
     if (!room || room.owner_id !== user_id) {
       callback(false);
@@ -115,7 +115,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     }
 
     try {
-      const success = await roomService.leaveRoom(roomId, player_id);
+      const success = await roomService.leaveRoom(room_id, player_id);
 
       if (!success) {
         callback(false);
@@ -124,19 +124,19 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
 
       // 通知被踢的玩家
       io.to(player_id).emit('room:kicked', {
-        roomId,
+        room_id,
         message: '你已被房主踢出房间'
       });
 
       // 通知房间内其他玩家
       if (success) {
-        io.to(`room:${roomId}`).emit('room:player-kicked', {
+        io.to(`room:${room_id}`).emit('room:player-kicked', {
           player_id: player_id,
         });
       }
 
       callback(true);
-      console.log(`👢 玩家 ${user_id} 被从房间 ${roomId} 踢出`);
+      console.log(`👢 玩家 ${user_id} 被从房间 ${room_id} 踢出`);
     } catch (error) {
       callback(false);
     }
@@ -145,15 +145,15 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    * 玩家切换准备状态
    * @description 玩家改变自己的状态(只能是非游戏时),准备/取消准备.返回 success 表示是否改变成功.通知房间 roomReady 表示是否所有人已准备(以便房主开始游戏)
    */
-  async function playerReadyChange(data: { roomId: string; player_id: string; ready: boolean }, callback: (success: boolean) => void) {
+  async function playerReadyChange(data: { room_id: string; player_id: string; ready: boolean }, callback: (success: boolean) => void) {
     const user_id = socket.user_id || '';
     if (!socket.isLoggedIn || !user_id) {
       callback(false);
       return;
     }
 
-    const { roomId, ready } = data;
-    const room = await roomService.getRoomById(roomId);
+    const { room_id, ready } = data;
+    const room = await roomService.getRoomById(room_id);
 
     if (!room) {
       callback(false);
@@ -161,12 +161,12 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     }
 
     try {
-      const { success, roomReady } = await roomService.playerReady(roomId, ready, data.player_id);
+      const { success, roomReady } = await roomService.playerReady(room_id, ready, data.player_id);
 
       callback(success);
       if (success) {
-        io.to(`room:${roomId}`).emit('room:room-ready', roomReady)
-        console.log(`🏠 房间 ${roomId} ${roomReady ? "已就绪" : "未就绪"}`);
+        io.to(`room:${room_id}`).emit('room:room-ready', roomReady)
+        console.log(`🏠 房间 ${room_id} ${roomReady ? "已就绪" : "未就绪"}`);
       }
     } catch (error) {
       callback(false);
@@ -175,14 +175,14 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
   /**
    * 更新房间设置
    */
-  async function updateRoom(data: { roomId: string; settings: Record<string, any> }, callback: (success: boolean) => void) {
+  async function updateRoom(data: { room_id: string; settings: Record<string, any> }, callback: (success: boolean) => void) {
     if (!socket.isLoggedIn) {
       callback(false);
       return;
     }
 
-    const { roomId, settings } = data;
-    const room = await roomService.getRoomById(roomId);
+    const { room_id, settings } = data;
+    const room = await roomService.getRoomById(room_id);
 
     if (!room || room.owner_id !== socket.user_id) {
       callback(false);
@@ -192,7 +192,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     try {
       room.settings = { ...room.settings, ...settings };
 
-      io.to(`room:${roomId}`).emit('room:settings-updated', {
+      io.to(`room:${room_id}`).emit('room:settings-updated', {
         settings: room.settings
       });
 
@@ -205,8 +205,8 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    * 认输
    * @description 修改房间状态为 waiting,非房主状态为 idle,对局match结束,向房间所有人发送消息和 room 最新数据
    */
-  async function surrender(data: { roomId: string; player_id: string }, callback: (success: boolean) => void) {
-    const room = await roomService.getRoomById(data.roomId);
+  async function surrender(data: { room_id: string; player_id: string }, callback: (success: boolean) => void) {
+    const room = await roomService.getRoomById(data.room_id);
     if (!room) {
       callback(false);
       return;
@@ -232,12 +232,12 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    * 离开房间
    * @description 判断玩家是不是房间中的人,离开操作 从房间中去掉该玩家,并重置游戏玩家的当前房间.向房间发送消息
    */
-  async function leaveRoom(data: { roomId: string; }, callback: (success: boolean) => void) {
+  async function leaveRoom(data: { room_id: string; }, callback: (success: boolean) => void) {
     if (!isLoggedIn) {
       callback(false);
       return;
     }
-    const room = await roomService.getRoomById(data.roomId);
+    const room = await roomService.getRoomById(data.room_id);
     if (!room) {
       callback(false);
       return;
@@ -266,13 +266,13 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     }
   }
 
-  async function closeRoom(data: { roomId: string }, cb: Function) {
-    const room = await roomService.destroyRoom(data.roomId);
+  async function closeRoom(data: { room_id: string }, cb: Function) {
+    const room = await roomService.destroyRoom(data.room_id);
     if (room) {
       // 房间已解散，通知游戏中的其他玩家
       socket.leave(`game:${room?.gameId}`);
       io.to(`game:${room?.gameId}`).emit('lobby:room-destroyed', {
-        roomId: room._id
+        room_id: room._id
       });
       cb(true);
     } else {

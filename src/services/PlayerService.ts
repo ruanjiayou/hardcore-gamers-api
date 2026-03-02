@@ -71,13 +71,13 @@ export class PlayerService {
     if (!player) return;
 
     const stats = player.stats;
-    stats.games++;
+    stats.matches++;
 
     if (isWin) {
       stats.winnings++;
     }
 
-    stats.wins_rate = stats.games > 0 ? stats.winnings / stats.games : 0;
+    stats.wins_rate = stats.matches > 0 ? stats.winnings / stats.matches : 0;
 
     // 升级逻辑：每赢10局升1级
     const requiredWins = player.level * 10;

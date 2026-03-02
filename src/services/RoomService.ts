@@ -30,8 +30,8 @@ export class RoomService {
   /**
    * 获取房间
    */
-  async getRoomById(roomId: string): Promise<IRoom | null> {
-    const room = await MRoom.findById(roomId).lean(true);
+  async getRoomById(room_id: string): Promise<IRoom | null> {
+    const room = await MRoom.findById(room_id).lean(true);
     return room || null;
   }
 
@@ -54,8 +54,8 @@ export class RoomService {
   /**
    * 验证房间密码
    */
-  async verifyPassword(roomId: string, password: string) {
-    const room = await MRoom.findById(roomId).lean(true);
+  async verifyPassword(room_id: string, password: string) {
+    const room = await MRoom.findById(room_id).lean(true);
     if (!room) return false;
 
     if (!room.isPrivate) return true; // 公开房间无需密码
@@ -66,26 +66,26 @@ export class RoomService {
   /**
    * 玩家加入房间 - 支持密码验证
    */
-  async joinRoom(roomId: string, player: IPlayer, password?: string) {
-    const room = await MRoom.findById(roomId).lean(true);
+  async joinRoom(room_id: string, player: IPlayer, password?: string) {
+    const room = await MRoom.findById(room_id).lean(true);
     if (!room) return false;
 
     const players = room.members.filter(m => m.type === constant.MEMBER.TYPE.player);
     // 检查房间是否已满
     if (players.length >= room.numbers.max) {
-      console.log(`❌ 房间已满: ${roomId}`);
+      console.log(`❌ 房间已满: ${room_id}`);
       return false;
     }
 
     // 检查房间状态
     if (room.status === 'playing' || room.status === 'loading') {
-      console.log(`❌ 房间游戏已开始: ${roomId}`);
+      console.log(`❌ 房间游戏已开始: ${room_id}`);
       return false;
     }
 
     // 验证密码
-    if (room.isPrivate && !this.verifyPassword(roomId, password || '')) {
-      console.log(`❌ 房间密码错误: ${roomId}`);
+    if (room.isPrivate && !this.verifyPassword(room_id, password || '')) {
+      console.log(`❌ 房间密码错误: ${room_id}`);
       return false;
     }
 
@@ -102,15 +102,15 @@ export class RoomService {
     diff.members.push(room_player)
     await MRoom.updateOne({ _id: room._id }, { $set: diff })
     await MPlayer.updateOne({ _id: room_player._id }, { $set: { room_id: room._id } })
-    console.log(`👤 玩家 ${player._id} 加入房间 ${roomId}，当前人数: ${diff.members.length}`);
+    console.log(`👤 玩家 ${player._id} 加入房间 ${room_id}，当前人数: ${diff.members.length}`);
     return true;
   }
 
   /**
    * 玩家离开房间
    */
-  async leaveRoom(roomId: string, playerId: string): Promise<boolean> {
-    const room = await MRoom.findById(roomId).lean(true);
+  async leaveRoom(room_id: string, playerId: string): Promise<boolean> {
+    const room = await MRoom.findById(room_id).lean(true);
     if (!room) return false;
 
     const playerIndex = room.members.findIndex(p => p._id === playerId);
@@ -120,7 +120,7 @@ export class RoomService {
     room.members.splice(playerIndex, 1);
     await MRoom.updateOne({ _id: room._id }, { $set: { members: room.members } })
     await MPlayer.updateOne({ _id: player._id }, { $set: { room_id: '' } })
-    console.log(`👤 玩家 ${player.user_id} 离开房间 ${roomId}，当前人数: ${room.members.length}`);
+    console.log(`👤 玩家 ${player.user_id} 离开房间 ${room_id}，当前人数: ${room.members.length}`);
 
     return true;
   }
@@ -128,8 +128,8 @@ export class RoomService {
   /**
    * 开始游戏
    */
-  async startGame(roomId: string, player_id: string) {
-    const room = await MRoom.findById(roomId).lean(true);
+  async startGame(room_id: string, player_id: string) {
+    const room = await MRoom.findById(room_id).lean(true);
     if (!room) return false;
 
     const players = room.members.filter(m => m.type === constant.MEMBER.TYPE.player);
@@ -156,9 +156,9 @@ export class RoomService {
     // room.players = await this.assignRole({ mode: 'fixed', roles: [] }, players)
     room.status = 'playing';
     room.startedAt = new Date();
-    await MRoom.updateOne({ _id: roomId }, { $set: { status: 'playing', startedAt: new Date() } })
+    await MRoom.updateOne({ _id: room_id }, { $set: { status: 'playing', startedAt: new Date() } })
 
-    console.log(`🎮 房间 ${roomId} 开始游戏，玩家数: ${players.length}`);
+    console.log(`🎮 房间 ${room_id} 开始游戏，玩家数: ${players.length}`);
     return true;
   }
 
@@ -176,11 +176,11 @@ export class RoomService {
     }
   }
 
-  async surrender(roomId: string, playerId: string) {
-    const room = await MRoom.findOne({ _id: roomId }).lean(true);
+  async surrender(room_id: string, playerId: string) {
+    const room = await MRoom.findOne({ _id: room_id }).lean(true);
     await MRoom.updateOne(
       {
-        _id: roomId
+        _id: room_id
       },
       {
         $set: {
@@ -196,25 +196,25 @@ export class RoomService {
   /**
    * 房间是否已满
    */
-  async isRoomFull(roomId: string) {
-    const room = await MRoom.findById(roomId).lean(true);
+  async isRoomFull(room_id: string) {
+    const room = await MRoom.findById(room_id).lean(true);
     return room ? room.members.filter(m => m.type === constant.MEMBER.TYPE.player).length >= room.numbers.max : false;
   }
 
   /**
    * 销毁房间
    */
-  async destroyRoom(roomId: string) {
-    const room = await MRoom.findById(roomId).lean(true);
+  async destroyRoom(room_id: string) {
+    const room = await MRoom.findById(room_id).lean(true);
     if (!room) return;
-    await MRoom.updateOne({ _id: roomId }, { $set: { status: 'finished' } });
-    console.log(`🗑️  房间解散: ${roomId}`);
+    await MRoom.updateOne({ _id: room_id }, { $set: { status: 'finished' } });
+    console.log(`🗑️  房间解散: ${room_id}`);
     return room;
   }
 
-  async playerReady(roomId: string, ready: boolean, player_id: string) {
+  async playerReady(room_id: string, ready: boolean, player_id: string) {
     console.log(`切换准备状态`, player_id, ready)
-    const room = await MRoom.findById(roomId).lean(true);
+    const room = await MRoom.findById(room_id).lean(true);
     if (!room || room.status === 'playing') {
       return { success: false, roomReady: false };
     }
@@ -226,17 +226,17 @@ export class RoomService {
     player.state = ready ? 'ready' : 'idle';
     const readys = sumBy(players, p => p.state === 'ready' ? 1 : 0);
     const roomReady = readys === players.length && readys >= room.numbers.min
-    await MRoom.updateOne({ _id: roomId, 'players._id': player._id }, { $set: { members: room.members, status: roomReady ? 'ready' : 'waiting' } })
+    await MRoom.updateOne({ _id: room_id, 'players._id': player._id }, { $set: { members: room.members, status: roomReady ? 'ready' : 'waiting' } })
     return { success: true, roomReady };
   }
   /**
    * 更新房间状态
    */
-  async updateRoomStatus(roomId: string, status: RoomStatus) {
-    const room = await MRoom.findById(roomId).lean(true);
+  async updateRoomStatus(room_id: string, status: RoomStatus) {
+    const room = await MRoom.findById(room_id).lean(true);
     if (!room) return false;
 
-    await MRoom.updateOne({ _id: roomId }, { $set: { status } });
+    await MRoom.updateOne({ _id: room_id }, { $set: { status } });
     return true;
   }
 

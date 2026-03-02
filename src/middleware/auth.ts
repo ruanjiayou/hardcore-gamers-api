@@ -61,7 +61,7 @@ export async function authMiddleware(socket: AuthSocket, next: (err?: Error) => 
     socket.join(`room:${player.room_id}`)
   }
 
-  console.log(`🔐 玩家认证成功: ${user.name} (${user._id}) | 状态: ${socket.isGuest ? '登陆' : '游客'}`);
+  console.log(`🔐 玩家认证成功: ${user.name} (${user._id}) | 状态: ${socket.isGuest ? '游客' : '登陆'}`);
 
   next();
 }

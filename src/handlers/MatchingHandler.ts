@@ -107,7 +107,7 @@ function _tryMatching(io: Server, gameId: string, playerName: string) {
           gameId,
           name: `Ranked Match - ${Date.now()}`,
           owner_id: owner?.user_id,
-          players: [],
+          members: [],
           numbers: {
             min: 2,
             max: Math.min(2, players.length)
@@ -122,8 +122,8 @@ function _tryMatching(io: Server, gameId: string, playerName: string) {
 
         matched.forEach(req => {
           io.to(req.player_id).emit('matching:matched', {
-            roomId: room._id,
-            opponents: (room.players as IPlayer[])
+            room_id: room._id,
+            opponents: (room.members as IPlayer[])
               .filter(p => p._id !== req.player_id)
               .map(p => ({
                 _id: p._id,
