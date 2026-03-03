@@ -101,7 +101,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       cb(false, undefined, '创建房间失败');
     }
   }
-  async function joinRoom(data: { room_id: string; password?: string }, cb: CB) {
+  async function joinRoom(data: { room_id: string; type: 'player' | 'viewer', password?: string }, cb: CB) {
     if (!cb) {
       return;
     }
@@ -138,34 +138,32 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
     }
 
     // 检查房间状态
-    if (player.user_id !== user_id && (room.status === 'playing' || room.status === 'loading')) {
-      cb(false, '游戏已开始，无法加入');
-      return;
+    if (data.type === 'player') {
+      if (players.findIndex(p => p._id === player._id) === -1 && (room.status === 'playing' || room.status === 'loading')) {
+        cb(false, '游戏已开始，无法加入');
+        return;
+      }
     }
 
     try {
+      let newPlayer: IPlayer | null = null;
       if (!inroom) {
-        const success = await roomService.joinRoom(room_id, player, password);
-        if (!success) {
+        const result = await roomService.joinRoom(room_id, data.type, player, password);
+        if (!result.success) {
           cb(false, room.isPrivate ? '房间密码错误' : '加入房间失败');
           return;
+        } else if (result.newPlayer) {
+          newPlayer = result.newPlayer;
         }
       }
       // 处理页面刷新 信息丢失
-      const new_room = await MRoom.findById(room_id).lean(true)
       socket.room_id = room_id;
       socket.player_id = player._id;
       socket.join(`room:${room_id}`);
       socket.join(`game:${room.gameId}`);
 
+      cb(true, newPlayer);
       io.to(`room:${room_id}`).emit('room:player-joined', player._id);
-
-      socket.emit('lobby:joined-room', {
-        room_id: room._id,
-        roomInfo: await roomService.getRoomById(room_id)
-      });
-
-      cb(true);
       console.log(`👤 玩家 ${player.user_id} 加入房间 ${room_id}`);
     } catch (error) {
       cb(false, '加入房间失败');

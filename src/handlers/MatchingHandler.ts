@@ -117,7 +117,7 @@ function _tryMatching(io: Server, gameId: string, playerName: string) {
         });
 
         for (let i = 1; i < players.length; i++) {
-          roomService.joinRoom(room._id as string, players[i]);
+          roomService.joinRoom(room._id as string, 'player', players[i]);
         }
 
         matched.forEach(req => {

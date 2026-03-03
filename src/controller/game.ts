@@ -10,14 +10,8 @@ const router = Router();
 
 // 获取所有游戏
 router.get('/', async (req, res) => {
-  const games = await gameService.getAllGames()
+  const games = await gameService.getAllGames(true)
   res.json({ code: 0, data: { list: games } });
-});
-
-// 获取游戏统计
-router.get('/stats/summary', async (req, res) => {
-  const stats = await gameService.getGameStats();
-  res.json({ code: 0, data: stats })
 });
 
 // 按类型获取游戏

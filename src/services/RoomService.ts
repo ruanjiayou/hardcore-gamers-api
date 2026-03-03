@@ -4,11 +4,12 @@
 
 import { v7 } from 'uuid';
 import type { IRoom, IPlayer, RoomStatus, IRoleConfig, IMember } from '../types/index';
-import { MPlayer, MRoom } from '../models'
-import { isEmpty, sumBy } from 'lodash';
+import { MMatch, MPlayer, MRoom } from '../models'
+import { cloneDeep, isEmpty, sumBy } from 'lodash';
 import redis from '../utils/redis'
 import config from '../config';
 import constant from '../constant'
+import GameLogics from '../games'
 
 export class RoomService {
 
@@ -66,63 +67,67 @@ export class RoomService {
   /**
    * 玩家加入房间 - 支持密码验证
    */
-  async joinRoom(room_id: string, player: IPlayer, password?: string) {
+  async joinRoom(room_id: string, type: string, player: IPlayer, password?: string): Promise<{ success: boolean, newPlayer?: IPlayer }> {
     const room = await MRoom.findById(room_id).lean(true);
-    if (!room) return false;
+    if (!room) return { success: false };
 
+    // 检查玩家是否已在房间中
+    if (room.members.some(p => p._id === player._id)) {
+      return { success: true };
+    }
     const players = room.members.filter(m => m.type === constant.MEMBER.TYPE.player);
-    // 检查房间是否已满
-    if (players.length >= room.numbers.max) {
-      console.log(`❌ 房间已满: ${room_id}`);
-      return false;
-    }
+    if (type === 'player') {
+      // 检查房间是否已满
+      if (players.length >= room.numbers.max) {
+        console.log(`❌ 房间已满: ${room_id}`);
+        return { success: false };
+      }
 
-    // 检查房间状态
-    if (room.status === 'playing' || room.status === 'loading') {
-      console.log(`❌ 房间游戏已开始: ${room_id}`);
-      return false;
-    }
+      // 检查房间状态
+      if (room.status === 'playing' || room.status === 'loading') {
+        console.log(`❌ 房间游戏已开始: ${room_id}`);
+        return { success: false };
+      }
 
+    }
     // 验证密码
     if (room.isPrivate && !this.verifyPassword(room_id, password || '')) {
       console.log(`❌ 房间密码错误: ${room_id}`);
-      return false;
+      return { success: false };
     }
-
-    // 检查玩家是否已在房间中
-    if (players.some(p => p._id === player._id)) {
-      return false;
-    }
-    const diff = { owner_id: room.owner_id, members: players }
-    // 第一个进入的自动成为房主
-    if (players.length === 0) {
-      player.user_id;
-    }
-    const room_player = { ...player, state: players.length === 0 ? 'ready' : 'idle', type: 'play', is_robot: false }
-    diff.members.push(room_player)
+    const newPlayer = { ...player, state: players.length === 0 ? 'ready' : 'idle', type, is_robot: false }
+    GameLogics.Xiangqi.assignRole(room, newPlayer)
+    room.members.push(newPlayer)
+    const diff = { owner_id: room.owner_id, members: cloneDeep(room.members) }
     await MRoom.updateOne({ _id: room._id }, { $set: diff })
-    await MPlayer.updateOne({ _id: room_player._id }, { $set: { room_id: room._id } })
+    await MPlayer.updateOne({ _id: player._id }, { $set: { room_id: room._id } })
     console.log(`👤 玩家 ${player._id} 加入房间 ${room_id}，当前人数: ${diff.members.length}`);
-    return true;
+    return { success: true, newPlayer };
   }
 
   /**
    * 玩家离开房间
    */
-  async leaveRoom(room_id: string, playerId: string): Promise<boolean> {
+  async leaveRoom(room_id: string, player_id: string): Promise<IMember[]> {
     const room = await MRoom.findById(room_id).lean(true);
-    if (!room) return false;
+    if (!room) return [];
+    const idx = room.members.findIndex(m => m._id === player_id);
+    if (-1 === idx) return [];
+    const old_list = cloneDeep(room.members.filter(m => m._id === player_id));
+    GameLogics.Xiangqi.assignRoles(room);
+    console.log(room_id, player_id)
+    await MRoom.updateOne({ _id: room._id }, { $set: { members: room.members.filter(m => m._id !== player_id) } })
+    await MPlayer.updateOne({ _id: player_id }, { $set: { room_id: '' } })
+    console.log(`👤 玩家 ${player_id} 离开房间 ${room_id}，当前人数: ${room.members.length - 1}`);
 
-    const playerIndex = room.members.findIndex(p => p._id === playerId);
-    if (playerIndex === -1) return false;
-
-    const player = room.members[playerIndex];
-    room.members.splice(playerIndex, 1);
-    await MRoom.updateOne({ _id: room._id }, { $set: { members: room.members } })
-    await MPlayer.updateOne({ _id: player._id }, { $set: { room_id: '' } })
-    console.log(`👤 玩家 ${player.user_id} 离开房间 ${room_id}，当前人数: ${room.members.length}`);
-
-    return true;
+    const changes: IMember[] = [];
+    room.members.forEach(member => {
+      const old = old_list.find(o => o._id === member._id);
+      if (old && old.role !== member.role) {
+        changes.push(member);
+      }
+    })
+    return changes;
   }
 
   /**
@@ -130,36 +135,50 @@ export class RoomService {
    */
   async startGame(room_id: string, player_id: string) {
     const room = await MRoom.findById(room_id).lean(true);
-    if (!room) return false;
+    if (!room) return '';
+    console.log('start game', player_id)
 
     const players = room.members.filter(m => m.type === constant.MEMBER.TYPE.player);
     const player = players.find(p => p._id === player_id);
     if (!player) {
-      return false;
+      return '';
     }
 
     if (room.owner_id !== player.user_id) {
-      return false;
+      return '';
     }
 
     if (players.length < room.numbers.min) {
-      return false;
+      return '';
     }
 
     if (players.length < room.numbers.min) {
-      return false;
+      return '';
     }
     const allReady = players.findIndex(p => p.state != 'ready') === -1;
     if (!allReady) {
-      return false;
+      return '';
     }
     // room.players = await this.assignRole({ mode: 'fixed', roles: [] }, players)
     room.status = 'playing';
     room.startedAt = new Date();
     await MRoom.updateOne({ _id: room_id }, { $set: { status: 'playing', startedAt: new Date() } })
-
+    const state = GameLogics['Xiangqi']?.getInitState(room);
+    const match_id = v7();
+    await MMatch.create({
+      _id: match_id,
+      game_id: room.gameId,
+      room_id: room._id,
+      status: 'playing',
+      init_state: state,
+      curr_state: state,
+      players: players,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      stats: {},
+    })
     console.log(`🎮 房间 ${room_id} 开始游戏，玩家数: ${players.length}`);
-    return true;
+    return match_id;
   }
 
   async assignRole(roleConfig: IRoleConfig, players: IMember[]) {
@@ -176,22 +195,26 @@ export class RoomService {
     }
   }
 
-  async surrender(room_id: string, playerId: string) {
-    const room = await MRoom.findOne({ _id: room_id }).lean(true);
+  async surrender(data: { room_id: string, match_id: string, player_id: string }) {
+    const room = await MRoom.findOne({ _id: data.room_id, status: 'playing' }).lean(true);
     await MRoom.updateOne(
       {
-        _id: room_id
+        _id: data.room_id
       },
       {
         $set: {
           status: 'waiting',
-          players: room?.members.map(p => {
+          updatedAt: new Date(),
+          members: room?.members.map(p => {
             p.state = p.type === constant.MEMBER.TYPE.player && p.user_id === room.owner_id ? 'ready' : 'idle';
             return p;
           })
         }
       });
-
+    const match = await MMatch.findOne({ room_id: data.room_id, status: 'playing' }).lean(true);
+    if (match) {
+      await MMatch.updateOne({ _id: match._id }, { $set: { status: 'finished', updatedAt: new Date() } });
+    }
   }
   /**
    * 房间是否已满

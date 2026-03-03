@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import config from '../config';
-import type { IGame, IRoom, IUser, IPlayer } from '../types/index';
+import type { IGame, IRoom, IMatch, IUser, IPlayer } from '../types/index';
 
 mongoose.set('strictQuery', true);
 mongoose.connect(config.mongo_url).catch(err => {
@@ -10,6 +10,7 @@ mongoose.connect(config.mongo_url).catch(err => {
 export const MGame = mongoose.model<IGame>('games', new mongoose.Schema({
   _id: String,
   name: String,
+  title: String,
   desc: String,
   genre: String,
   icon: String,
@@ -30,17 +31,17 @@ export const MRoom = mongoose.model<IRoom>('rooms', new mongoose.Schema({
   owner_id: String,
   members: [{
     _id: String,
+    user_id: String,
     user_name: String,
     title: String,
     status: Number,
     state: String,
     level: Number,
     score: Number,
-    user_id: String,
     avatar: String,
     role: String,
     team: String,
-    type: String,
+    type: { type: String },
   }],
   seats: [{ _id: false, team: String, size: Number }],
   numbers: { min: Number, max: Number },
@@ -52,12 +53,13 @@ export const MRoom = mongoose.model<IRoom>('rooms', new mongoose.Schema({
   settings: mongoose.SchemaTypes.Mixed,
 }, { collection: 'rooms', versionKey: false, }));
 
-export const MMatch = mongoose.model('matches', new mongoose.Schema({
+export const MMatch = mongoose.model<IMatch>('matches', new mongoose.Schema({
   _id: String,
   game_id: String,
   room_id: String,
   status: String,
-  state: mongoose.SchemaTypes.Mixed,
+  init_state: mongoose.SchemaTypes.Mixed,
+  curr_state: mongoose.SchemaTypes.Mixed,
   players: [{ _id: String, role: String, score: Number, is_winner: Boolean }],
   movements: [{ _id: false, player_id: String, data: mongoose.SchemaTypes.Mixed, timestamp: Number, }],
   createdAt: Date, // 开始时间

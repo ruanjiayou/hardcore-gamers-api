@@ -11,6 +11,7 @@ export interface IRoleConfig {
 export interface IGame {
   _id: string;
   name: string;
+  title: string;
   desc: string;
   numbers: { min: number, max: number };
   genre: 'fps' | 'moba' | 'rpg' | 'card' | 'puzzle';
@@ -42,6 +43,20 @@ export interface IRoom {
   updatedAt: Date;
   startedAt?: Date;
   settings: Record<string, any>;
+}
+
+export interface IMatch {
+  _id: string;
+  game_id: string,
+  room_id: string,
+  status: string;
+  init_state: any;
+  curr_state: any;
+  players: IPlayer;
+  movements: any[];
+  createdAt: Date;
+  updatedAt: Date;
+  stats: any;
 }
 
 export interface IUser {

@@ -56,6 +56,7 @@ export async function authMiddleware(socket: AuthSocket, next: (err?: Error) => 
   }
   socket.user_id = user_id;
   socket.redis = redis
+  socket.join(`user:${user_id}`)
   const player = await MPlayer.findOne({ user_id }).lean(true);
   if (player && player.room_id) {
     socket.join(`room:${player.room_id}`)

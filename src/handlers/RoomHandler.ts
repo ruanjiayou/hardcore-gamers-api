@@ -7,6 +7,8 @@ import { CB } from '../types';
 import { roomService } from '../services/RoomService';
 import type { AuthSocket } from '../middleware/auth';
 import constant from '../constant'
+import { MMatch } from '../models';
+import GameLogics from '../games'
 
 export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: string) {
   const isLoggedIn = socket.isLoggedIn;
@@ -18,6 +20,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
   socket.on('room:leave', leaveRoom);
   socket.on('room:player-ready', playerReadyChange)
   socket.on('room:start-game', startGame);
+  socket.on('room:get-match-state', getMatchState);
   socket.on('room:surrender', surrender);
   socket.on('room:close', closeRoom)
 
@@ -64,26 +67,26 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    * 房主开始游戏
    * @description 判断条件是否满足,修改房间状态,分配位置,向房间发送通知(初始状态数据和玩家分配信息)
    */
-  async function startGame(data: { room_id: string, player_id: string }, callback: (success: boolean, error?: string) => void) {
+  async function startGame(data: { room_id: string, player_id: string }, callback: (match_id: string, error?: string) => void) {
     if (!socket.isLoggedIn) {
-      callback(false, '需要登陆');
+      callback('', '需要登陆');
       return;
     }
 
     const { room_id } = data;
     const room = await roomService.getRoomById(room_id);
     if (!room) {
-      callback(false, '房间或玩家不存在');
+      callback('', '房间或玩家不存在');
       return;
     }
     try {
-      const started = await roomService.startGame(room_id, data.player_id);
-      if (!started) {
-        callback(false, '开始游戏失败');
+      const match_id = await roomService.startGame(room_id, data.player_id);
+      if (!match_id) {
+        callback(match_id, '开始游戏失败');
         return;
       }
 
-      callback(true);
+      callback(match_id);
 
       io.to(`room:${room_id}`).emit('room:game-started', {
         room_id,
@@ -92,8 +95,14 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       });
 
     } catch (error) {
-      callback(false, '开始游戏失败');
+      console.log(error)
+      callback('', '开始游戏报错');
     }
+  }
+
+  async function getMatchState(data: { room_id: string, match_id: string, player_id: string }) {
+    const match = await MMatch.findOne({ room_id: data.room_id, _id: data.match_id }).lean(true);
+    return match?.curr_state;
   }
 
   /**
@@ -205,21 +214,21 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    * 认输
    * @description 修改房间状态为 waiting,非房主状态为 idle,对局match结束,向房间所有人发送消息和 room 最新数据
    */
-  async function surrender(data: { room_id: string; player_id: string }, callback: (success: boolean) => void) {
+  async function surrender(data: { room_id: string; match_id: string, player_id: string }, callback: (success: boolean) => void) {
     const room = await roomService.getRoomById(data.room_id);
     if (!room) {
       callback(false);
       return;
     }
-    const player = room.members.find(p => p.user_id === socket.user_id);
+    const player = room.members.find(p => p._id === data.player_id);
     if (!player) {
       callback(false);
       return;
     }
     try {
-      await roomService.surrender(room._id, player._id);
+      await roomService.surrender(data);
       callback(true);
-      console.log(`👤 玩家 ${player.user_id} 离开房间 ${room._id}`);
+      console.log(`🏡 ${room._id} 👤 玩家 ${player.user_id} 认输`);
 
       io.to(`room:${room._id}`).emit('room:player-surrender', { room_id: room._id, player_id: player._id, player_name: player.user_name });
 
@@ -232,34 +241,24 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    * 离开房间
    * @description 判断玩家是不是房间中的人,离开操作 从房间中去掉该玩家,并重置游戏玩家的当前房间.向房间发送消息
    */
-  async function leaveRoom(data: { room_id: string; }, callback: (success: boolean) => void) {
+  async function leaveRoom(data: { room_id: string; player_id: string }, callback: (success: boolean) => void) {
     if (!isLoggedIn) {
-      callback(false);
-      return;
-    }
-    const room = await roomService.getRoomById(data.room_id);
-    if (!room) {
-      callback(false);
-      return;
-    }
-    const player = room.members.find(p => p.user_id === socket.user_id);
-    if (!player) {
       callback(false);
       return;
     }
 
     try {
-      const success = await roomService.leaveRoom(room._id, player._id);
-      if (!success) {
-        callback(false);
-        return;
-      }
-      socket.room_id = undefined;
-      socket.leave(`room:${room._id}`);
-      io.to(`room:${room._id}`).emit('room:player-leaved', { room_id: room._id, player_id: player._id, player_name: player.user_name });
-
+      const players = await roomService.leaveRoom(data.room_id, data.player_id);
       callback(true);
-      console.log(`👤 玩家 ${player.user_id} 离开房间 ${room._id}`);
+
+      socket.room_id = undefined;
+      socket.leave(`room:${data.room_id}`);
+      socket.leave(`user:${user_id}`);
+      io.to(`room:${data.room_id}`).emit('room:player-leaved', { room_id: data.room_id, player_id: data.player_id });
+      console.log(`👤 玩家 ${data.player_id} 离开房间 ${data.room_id}`);
+      players.forEach(p => {
+        io.to(`user:${p.user_id}`).emit('room:player-change', p);
+      })
     } catch (error) {
       console.log(error, 'err')
       callback(false);
