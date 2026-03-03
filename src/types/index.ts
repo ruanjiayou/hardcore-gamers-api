@@ -52,7 +52,7 @@ export interface IMatch {
   status: string;
   init_state: any;
   curr_state: any;
-  players: IPlayer;
+  players: IPlayer[];
   movements: any[];
   createdAt: Date;
   updatedAt: Date;
