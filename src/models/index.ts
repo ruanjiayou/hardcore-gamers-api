@@ -78,7 +78,7 @@ export const MUser = mongoose.model<IUser>('users', new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 }, { collection: 'users', versionKey: false, }));
 
-export const MPlayer = mongoose.model<IPlayer>('players', new mongoose.Schema({
+export const MPlayer = mongoose.model<IPlayer & { room_id: string }>('players', new mongoose.Schema({
   _id: String,
   game_id: String,
   room_id: String,

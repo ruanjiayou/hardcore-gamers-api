@@ -7,13 +7,13 @@ import { CB } from '../types';
 import { roomService } from '../services/RoomService';
 import type { AuthSocket } from '../middleware/auth';
 import constant from '../constant'
-import { MMatch } from '../models';
+import { MMatch, MPlayer } from '../models';
 import GameLogics from '../games'
 
 export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: string) {
   const isLoggedIn = socket.isLoggedIn;
 
-  socket.on('room:get-info', getRoomInfo);
+  socket.on('room:detail', getRoomDetail);
   socket.on('room:update-settings', updateRoom);
   socket.on('room:send-message', sendMessage);
   socket.on('room:kick-player', kickPlayer,);
@@ -24,10 +24,15 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
   socket.on('room:surrender', surrender);
   socket.on('room:close', closeRoom)
 
-  async function getRoomInfo(data: { room_id: string }, cb: CB) {
+  async function getRoomDetail(data: { room_id: string }, cb: CB) {
     const { room_id } = data;
-    const roomInfo = await roomService.getRoomById(room_id);
-    cb(roomInfo);
+    const room = await roomService.getRoomById(room_id);
+    let match_id = '';
+    if (room && room?.status === constant.ROOM.STATUS.playing) {
+      const match = await MMatch.findOne({ room_id, status: constant.MATCH.STATUS.playing }, { _id: 1 }).lean();
+      match_id = match ? match._id : ''
+    }
+    cb({ room, match_id })
   }
   /**
    * 发送房间消息
@@ -67,42 +72,38 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    * 房主开始游戏
    * @description 判断条件是否满足,修改房间状态,分配位置,向房间发送通知(初始状态数据和玩家分配信息)
    */
-  async function startGame(data: { room_id: string, player_id: string }, callback: (match_id: string, error?: string) => void) {
+  async function startGame(data: { room_id: string, player_id: string }, callback: (success: boolean) => void) {
     if (!socket.isLoggedIn) {
-      callback('', '需要登陆');
-      return;
+      return callback(false);
     }
 
     const { room_id } = data;
     const room = await roomService.getRoomById(room_id);
     if (!room) {
-      callback('', '房间或玩家不存在');
-      return;
+      return callback(false);
     }
     try {
       const match_id = await roomService.startGame(room_id, data.player_id);
       if (!match_id) {
-        callback(match_id, '开始游戏失败');
-        return;
+        return callback(false);
       }
 
-      callback(match_id);
+      callback(true);
 
       io.to(`room:${room_id}`).emit('room:game-started', {
         room_id,
-        playerCount: room.members.length,
+        match_id,
         timestamp: Date.now()
       });
-
     } catch (error) {
       console.log(error)
-      callback('', '开始游戏报错');
+      callback(false);
     }
   }
 
-  async function getMatchState(data: { room_id: string, match_id: string, player_id: string }) {
+  async function getMatchState(data: { room_id: string, match_id: string, player_id: string }, callback: (state: any) => void) {
     const match = await MMatch.findOne({ room_id: data.room_id, _id: data.match_id }).lean(true);
-    return match?.curr_state;
+    callback(match?.curr_state);
   }
 
   /**

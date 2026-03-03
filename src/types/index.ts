@@ -78,7 +78,6 @@ export interface ISeat {
 export interface IPlayer {
   _id: string;
   game_id: string;
-  room_id: string;
   user_id: string;
   user_name: string;
   avatar: string;
