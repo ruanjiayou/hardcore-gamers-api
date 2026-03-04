@@ -1,5 +1,5 @@
 import constant from "../../constant";
-import { IMember, IRoom } from "../../types";
+import { IMatch, IMember, IPlayer, IRoom } from "../../types";
 
 export default class Xiangqi {
   static getInitState(room: IRoom) {
@@ -63,10 +63,11 @@ export default class Xiangqi {
   static assignRole(room: IRoom, player: IMember) {
     player.role = room.members.filter(m => m.type === constant.MEMBER.TYPE.player).length === 0 ? 'red' : 'black'
   }
-  static assignRoles(room: IRoom) {
-    const players = room.members.filter(m => m.type === constant.MEMBER.TYPE.player);
-    if (players[0]) players[0].role = 'red';
-    if (players[1]) players[1].role = 'black';
-    return players;
+  static assignRoles(players: IPlayer[]) {
+    return players.map((p, idx) => ({ _id: p._id, role: idx === 0 ? 'red' : 'black', score: 0, is_winner: false }));
+  }
+  static isLegalMove(match: IMatch, movement: { player_id: string; from: { x: number, y: number }, to: { x: number, y: number } }) {
+    const next = match.players.find(p => p._id !== movement.player_id);
+    return { success: true, data: { next_turn: next?._id, from: movement.from, to: movement.to } }
   }
 }

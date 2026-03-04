@@ -114,7 +114,6 @@ export class RoomService {
     const idx = room.members.findIndex(m => m._id === player_id);
     if (-1 === idx) return [];
     const old_list = cloneDeep(room.members.filter(m => m._id === player_id));
-    GameLogics.Xiangqi.assignRoles(room);
     console.log(room_id, player_id)
     await MRoom.updateOne({ _id: room._id }, { $set: { members: room.members.filter(m => m._id !== player_id) } })
     await MPlayer.updateOne({ _id: player_id }, { $set: { room_id: '' } })
@@ -159,10 +158,13 @@ export class RoomService {
     if (!allReady) {
       return '';
     }
-    // room.players = await this.assignRole({ mode: 'fixed', roles: [] }, players)
     room.status = 'playing';
     room.startedAt = new Date();
-    await MRoom.updateOne({ _id: room_id }, { $set: { status: 'playing', startedAt: new Date() } })
+    await MRoom.updateOne({ _id: room_id }, {
+      $set: {
+        status: 'playing', startedAt: new Date(), members: room.members.map(m => ({ ...m, state: m.type === constant.MEMBER.TYPE.viewer ? 'wating' : 'playing' }))
+      }
+    })
     const state = GameLogics['Xiangqi']?.getInitState(room);
     const match_id = v7();
     await MMatch.create({
@@ -172,7 +174,7 @@ export class RoomService {
       status: 'playing',
       init_state: state,
       curr_state: state,
-      players: players,
+      players: GameLogics['Xiangqi']?.assignRoles(players), // players.map(p => ({ _id: p._id, score: 0, is_winner: false, role: '' })),
       createdAt: new Date(),
       updatedAt: new Date(),
       stats: {},

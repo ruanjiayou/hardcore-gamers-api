@@ -19,6 +19,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
   socket.on('room:kick-player', kickPlayer,);
   socket.on('room:leave', leaveRoom);
   socket.on('room:player-ready', playerReadyChange)
+  socket.on('room:player-action', playerAction)
   socket.on('room:start-game', startGame);
   socket.on('room:get-match-state', getMatchState);
   socket.on('room:surrender', surrender);
@@ -103,7 +104,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
 
   async function getMatchState(data: { room_id: string, match_id: string, player_id: string }, callback: (state: any) => void) {
     const match = await MMatch.findOne({ room_id: data.room_id, _id: data.match_id }).lean(true);
-    callback(match?.curr_state);
+    callback({ ...match?.curr_state, match_id: match?._id });
   }
 
   /**
@@ -181,6 +182,24 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     } catch (error) {
       callback(false);
     }
+  }
+  async function playerAction(match_id: string, movement: { player_id: string, from: { x: number, y: number }, to: { x: number, y: number } }, callback: (success: boolean) => void) {
+    const match = await MMatch.findOne({ _id: match_id }).lean(true);
+    if (match) {
+      // TODO: 逻辑判断
+      const { success, data } = GameLogics.Xiangqi.isLegalMove(match, movement)
+      callback(success);
+      if (success) {
+        const curr_state = match.curr_state;
+        curr_state.curr_turn = data.next_turn;
+        curr_state.board[data.to.x][data.to.y] = curr_state.board[data.from.x][data.from.y];
+        await MMatch.updateOne({ _id: match_id }, { $set: { curr_state }, $push: { movements: movement } })
+      }
+      io.to(`room:${match.room_id}`).emit('room:player-action', data);
+    } else {
+      callback(false)
+    }
+
   }
   /**
    * 更新房间设置
