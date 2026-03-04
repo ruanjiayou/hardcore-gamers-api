@@ -1,4 +1,5 @@
 import constant from "../../constant";
+import { MMatch } from "../../models";
 import { IMatch, IMember, IPlayer, IRoom } from "../../types";
 
 export default class Xiangqi {
@@ -66,8 +67,20 @@ export default class Xiangqi {
   static assignRoles(players: IPlayer[]) {
     return players.map((p, idx) => ({ _id: p._id, role: idx === 0 ? 'red' : 'black', score: 0, is_winner: false }));
   }
-  static isLegalMove(match: IMatch, movement: { player_id: string; from: { x: number, y: number }, to: { x: number, y: number } }) {
+  static async excuteMove(match: IMatch, movement: { player_id: string; from: { x: number, y: number }, to: { x: number, y: number } }) {
+    // TODO: xy idx转换
+    console.log(movement, 'movement')
     const next = match.players.find(p => p._id !== movement.player_id);
-    return { success: true, data: { next_turn: next?._id, from: movement.from, to: movement.to } }
+
+    const curr_state = match.curr_state;
+    const src = curr_state.board[movement.from.x][movement.from.y];
+    const dst = curr_state.board[movement.to.x][movement.to.y]
+    console.log(src, dst)
+    curr_state.board[movement.to.x][movement.to.y] = curr_state.board[movement.from.x][movement.from.y];
+    curr_state.board[movement.from.x][movement.from.y] = null;
+    curr_state.curr_turn = next?._id;
+    const result = await MMatch.updateOne({ _id: match._id }, { $set: { curr_state, updatedAt: new Date() }, $push: { movements: { ...movement, timestamp: Date.now() } } });
+    console.log(result)
+    return { success: true, data: { curr_turn: movement.player_id, next_turn: next?._id, from: movement.from, to: movement.to } }
   }
 }

@@ -61,7 +61,7 @@ export const MMatch = mongoose.model<IMatch>('matches', new mongoose.Schema({
   init_state: mongoose.SchemaTypes.Mixed,
   curr_state: mongoose.SchemaTypes.Mixed,
   players: [{ _id: String, role: String, score: Number, is_winner: Boolean }],
-  movements: [{ _id: false, player_id: String, data: mongoose.SchemaTypes.Mixed, timestamp: Number, }],
+  movements: [mongoose.SchemaTypes.Mixed],
   createdAt: Date, // 开始时间
   updatedAt: Date, // 结束时间
   stats: mongoose.SchemaTypes.Mixed, // 

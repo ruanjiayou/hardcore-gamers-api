@@ -184,18 +184,18 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     }
   }
   async function playerAction(match_id: string, movement: { player_id: string, from: { x: number, y: number }, to: { x: number, y: number } }, callback: (success: boolean) => void) {
+    const player = await MPlayer.findById(movement.player_id);
+    if (!player || player.user_id !== user_id) {
+      return callback(false);
+    }
     const match = await MMatch.findOne({ _id: match_id }).lean(true);
     if (match) {
       // TODO: 逻辑判断
-      const { success, data } = GameLogics.Xiangqi.isLegalMove(match, movement)
+      const { success, data } = await GameLogics.Xiangqi.excuteMove(match, movement)
       callback(success);
       if (success) {
-        const curr_state = match.curr_state;
-        curr_state.curr_turn = data.next_turn;
-        curr_state.board[data.to.x][data.to.y] = curr_state.board[data.from.x][data.from.y];
-        await MMatch.updateOne({ _id: match_id }, { $set: { curr_state }, $push: { movements: movement } })
+        io.to(`room:${match.room_id}`).emit('room:player-action', data);
       }
-      io.to(`room:${match.room_id}`).emit('room:player-action', data);
     } else {
       callback(false)
     }
