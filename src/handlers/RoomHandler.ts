@@ -183,7 +183,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       callback(false);
     }
   }
-  async function playerAction(match_id: string, movement: { player_id: string, from: { x: number, y: number }, to: { x: number, y: number } }, callback: (success: boolean) => void) {
+  async function playerAction(match_id: string, movement: { player_id: string, from: [number, number], to: [number, number] }, callback: (success: boolean) => void) {
     const player = await MPlayer.findById(movement.player_id);
     if (!player || player.user_id !== user_id) {
       return callback(false);
