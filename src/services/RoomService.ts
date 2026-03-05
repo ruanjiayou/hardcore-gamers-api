@@ -183,6 +183,45 @@ export class RoomService {
     return match_id;
   }
 
+  async gameover(room_id: string, match_id: string, winner_player_id) {
+    const room = await MRoom.findOne({ _id: room_id, status: 'playing' }).lean(true);
+    if (room) {
+      await MRoom.updateOne(
+        {
+          _id: room_id
+        },
+        {
+          $set: {
+            status: 'waiting',
+            updatedAt: new Date(),
+            members: room.members.map(p => {
+              if (p.type !== constant.MEMBER.TYPE.player) {
+                p.state = p._id === winner_player_id ? 'ready' : 'idle';
+
+              }
+              return p;
+            })
+          }
+        });
+    }
+    const match = await MMatch.findOne({ room_id: room_id }).lean(true);
+    if (match) {
+      await MMatch.updateOne(
+        { _id: match._id },
+        {
+          $set: {
+            status: 'finished',
+            updatedAt: new Date(),
+            players: match.players.map(p => ({ ...p, score: p._id === winner_player_id ? 1 : 0 })),
+          }
+        });
+      await Promise.all(match.players.map(p => MPlayer.updateOne({
+        _id: p._id,
+      }, {
+        $inc: { score: 1, 'stats.games': 1, winnings: p._id === winner_player_id ? 1 : 0 }
+      })))
+    }
+  }
   async assignRole(roleConfig: IRoleConfig, players: IMember[]) {
     switch (roleConfig.mode) {
       case "fixed":

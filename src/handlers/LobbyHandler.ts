@@ -139,6 +139,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
 
     // 检查房间状态
     if (data.type === 'player') {
+      // @ts-ignore
       if (players.findIndex(p => p._id === player._id) === -1 && (room.status === 'playing' || room.status === 'loading')) {
         cb(false, '游戏已开始，无法加入');
         return;
@@ -163,7 +164,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       socket.join(`game:${room.gameId}`);
 
       cb(true, newPlayer);
-      io.to(`room:${room_id}`).emit('room:player-joined', player._id);
+      io.to(`room:${room_id}`).emit('room:player-joined', player);
       console.log(`👤 玩家 ${player.user_id} 加入房间 ${room_id}`);
     } catch (error) {
       cb(false, '加入房间失败');

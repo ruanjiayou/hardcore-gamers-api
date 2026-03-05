@@ -196,7 +196,8 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       if (success) {
         io.to(`room:${match.room_id}`).emit('room:player-action', data);
         if (gameover) {
-          io.to(`room:${match.room_id}`).emit('room:game-over', { player_id: player._id })
+          await roomService.gameover(match.room_id, match_id, movement.player_id)
+          io.to(`room:${match.room_id}`).emit('room:game-over', player)
         }
       }
     } else {
@@ -252,14 +253,15 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       await roomService.surrender(data);
       callback(true);
       console.log(`🏡 ${room._id} 👤 玩家 ${player.user_id} 认输`);
-
-      io.to(`room:${room._id}`).emit('room:player-surrender', { room_id: room._id, player_id: player._id, player_name: player.user_name });
-
+      const winner = room.members.find(m => m.type === 'player' && m._id !== data.player_id)
+      await roomService.gameover(data.room_id, data.match_id, data.player_id)
+      io.to(`room:${data.room_id}`).emit('room:game-over', winner)
     } catch (error) {
       console.log(error, 'err')
       callback(false);
     }
   }
+
   /**
    * 离开房间
    * @description 判断玩家是不是房间中的人,离开操作 从房间中去掉该玩家,并重置游戏玩家的当前房间.向房间发送消息
@@ -277,7 +279,8 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       socket.room_id = undefined;
       socket.leave(`room:${data.room_id}`);
       socket.leave(`user:${user_id}`);
-      io.to(`room:${data.room_id}`).emit('room:player-leaved', { room_id: data.room_id, player_id: data.player_id });
+      const player = await MPlayer.findById(data.player_id).lean(true)
+      io.to(`room:${data.room_id}`).emit('room:player-leaved', player);
       console.log(`👤 玩家 ${data.player_id} 离开房间 ${data.room_id}`);
       players.forEach(p => {
         io.to(`user:${p.user_id}`).emit('room:player-change', p);

@@ -81,7 +81,7 @@ export default class Xiangqi {
     let gameover = false;
     // 需要深克隆,不然修改位置部分失败
     const curr_state = cloneDeep(match.curr_state);
-    if (curr_state.board[to[0]][to[1]].type === 'k') {
+    if (curr_state.board[to[0]][to[1]]?.type === 'k') {
       gameover = true;
     }
     curr_state.board[to[0]][to[1]] = curr_state.board[from[0]][from[1]];
@@ -96,5 +96,9 @@ export default class Xiangqi {
     await MMatch.updateOne({ _id: match._id }, diff);
 
     return { success: true, gameover, data: { curr_turn: movement.player_id, next_turn: next?._id, from: movement.from, to: movement.to } }
+  }
+
+  static async finish() {
+    
   }
 }
