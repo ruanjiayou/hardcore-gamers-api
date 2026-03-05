@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import constant from "../../constant";
-import { MMatch } from "../../models";
+import { MMatch, MPlayer } from "../../models";
 import { IMatch, IMember, IPlayer, IRoom } from "../../types";
 import { cloneDeep } from "lodash";
 
@@ -78,14 +78,23 @@ export default class Xiangqi {
     const next = match.players.find(p => p._id !== movement.player_id);
 
     const { player_id, from, to } = movement;
+    let gameover = false;
     // 需要深克隆,不然修改位置部分失败
     const curr_state = cloneDeep(match.curr_state);
-
+    if (curr_state.board[to[0]][to[1]].type === 'k') {
+      gameover = true;
+    }
     curr_state.board[to[0]][to[1]] = curr_state.board[from[0]][from[1]];
     curr_state.board[from[0]][from[1]] = null;
     curr_state.curr_turn = next?._id;
-    await MMatch.updateOne({ _id: match._id }, { $set: { curr_state, updatedAt: new Date() }, $push: { movements: { ...movement, timestamp: Date.now() } } });
+    const diff: any = { $set: { curr_state, updatedAt: new Date() }, $push: { movements: { ...movement, timestamp: Date.now() } } }
+    if (gameover) {
+      diff.$set.status = 'finished';
+      diff.$set.players = match.players.map(p => ({ ...p, score: p._id === player_id ? 1 : 0 }))
+      await Promise.all(match.players.map(p => MPlayer.updateOne({ _id: p._id }, { $inc: { score: 1, 'stats.games': 1, winnings: p._id === player_id ? 1 : 0 } })))
+    }
+    await MMatch.updateOne({ _id: match._id }, diff);
 
-    return { success: true, data: { curr_turn: movement.player_id, next_turn: next?._id, from: movement.from, to: movement.to } }
+    return { success: true, gameover, data: { curr_turn: movement.player_id, next_turn: next?._id, from: movement.from, to: movement.to } }
   }
 }

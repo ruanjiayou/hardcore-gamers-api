@@ -191,10 +191,13 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     const match = await MMatch.findOne({ _id: match_id }).lean(true);
     if (match) {
       // TODO: 逻辑判断
-      const { success, data } = await GameLogics.Xiangqi.excuteMove(match, movement)
+      const { success, gameover, data } = await GameLogics.Xiangqi.excuteMove(match, movement)
       callback(success);
       if (success) {
         io.to(`room:${match.room_id}`).emit('room:player-action', data);
+        if (gameover) {
+          io.to(`room:${match.room_id}`).emit('room:game-over', { player_id: player._id })
+        }
       }
     } else {
       callback(false)
