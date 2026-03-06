@@ -30,13 +30,12 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
     const games = await gameService.getAllGames(true);
     cb && cb(games);
   }
-  async function getRooms(data: { gameId: string }, cb: CB) {
-    const { gameId } = data;
-    const rooms = await roomService.getRoomsByGameId(gameId);
+  async function getRooms(where: { slug: string }, cb: CB) {
+    const rooms = await roomService.getRoomsByGameName(where.slug);
     cb && cb(rooms);
   }
-  async function getGamePlayer(data: { gameId: string }, cb: CB) {
-    const player = await playerService.getOrCreatePlayer(user_id, data.gameId);
+  async function getGamePlayer(where: { slug: string }, cb: CB) {
+    const player = await playerService.getOrCreatePlayer(user_id, where.slug);
     if (player.room_id) {
       const room = await roomService.getRoomById(player.room_id);
       const roomPlayer = room?.members.find(p => p._id === player._id)
@@ -45,21 +44,21 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       cb(player);
     }
   }
-  async function createRoom(data: { gameId: string; roomName: string; isPrivate?: boolean; password?: string }, cb: CB) {
+  async function createRoom(data: { room_id: string; name: string; isPrivate?: boolean; password?: string }, cb: CB) {
     if (!isLoggedIn) {
       cb(false, undefined, '创建房间需要登陆');
       return;
     }
 
-    const { gameId, roomName, isPrivate, password } = data;
-    const player = await playerService.getOrCreatePlayer(user_id, gameId);
+    const { name, isPrivate, password } = data;
+    const player = await playerService.getOrCreatePlayer(user_id, name);
 
     if (!player) {
       cb(false, undefined, '玩家不存在');
       return;
     }
 
-    const game = await gameService.getGameById(gameId);
+    const game = await gameService.getGameById(player.game_id);
     if (!game) {
       cb(false, undefined, '游戏不存在');
       return;
@@ -73,8 +72,8 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
 
     try {
       const room = await roomService.createRoom({
-        gameId,
-        name: roomName,
+        game_id: game._id,
+        name: data.name,
         owner_id: player.user_id,
         members: [],
         numbers: game.numbers,
@@ -84,14 +83,6 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
           difficulty: 'normal',
           mode: 'casual'
         }
-      });
-
-      io.to(`game:${gameId}`).emit('lobby:room-created', {
-        room_id: room._id,
-        roomName: room.name,
-        playerCount: 1,
-        numbers: room.numbers,
-        isPrivate: isPrivate
       });
 
       cb(true, room._id);
@@ -127,7 +118,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
 
     let player: IPlayer | null = null;
     try {
-      player = await playerService.getOrCreatePlayer(user_id, room.gameId);
+      player = await playerService.getOrCreatePlayer(user_id, room.game_id);
     } catch (err: any) {
       console.log('获取用户错误', err.message)
     }
@@ -161,7 +152,6 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       socket.room_id = room_id;
       socket.player_id = player._id;
       socket.join(`room:${room_id}`);
-      socket.join(`game:${room.gameId}`);
 
       cb(true, newPlayer);
       io.to(`room:${room_id}`).emit('room:player-joined', player);

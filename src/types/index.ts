@@ -10,7 +10,7 @@ export interface IRoleConfig {
 // ========== 游戏相关 ==========
 export interface IGame {
   _id: string;
-  name: string;
+  slug: string;
   title: string;
   desc: string;
   numbers: { min: number, max: number };
@@ -30,10 +30,10 @@ export type RoomStatus = 'waiting' | 'loading' | 'playing' | 'closed';
 // 更新 Room 接口
 export interface IRoom {
   _id: string;
-  gameId: string;
   name: string;
-  status: string; // 'waiting' | 'ready' | 'playing' | 'closed'
+  game_id: string;
   owner_id: string;
+  status: string; // 'waiting' | 'ready' | 'playing' | 'closed'
   members: IMember[];
   seats: ISeat[],
   numbers: { min: number, max: number };
@@ -47,16 +47,18 @@ export interface IRoom {
 
 export interface IMatch {
   _id: string;
-  game_id: string,
   room_id: string,
-  status: string;
+  game_id: string,
+  status: string; // waiting playing aborted finished
   init_state: any;
   curr_state: any;
   players: IPlayer[];
   movements: any[];
   createdAt: Date;
   updatedAt: Date;
-  stats: any;
+  stats: {
+    winner_id: string;
+  };
 }
 
 export interface IUser {
@@ -77,9 +79,9 @@ export interface ISeat {
 // ========== 玩家相关 ==========
 export interface IPlayer {
   _id: string;
-  game_id: string;
   user_id: string;
-  user_name: string;
+  game_id: string;
+  nick_name: string;
   avatar: string;
 
   title: string; // 称号
@@ -102,9 +104,9 @@ export interface IMember extends IPlayer {
 
 export interface PlayerStats {
   matches: number;
-  winnings: number;
-  wins_rate: number;
-  flee_rate: number;
+  winners: number;
+  draws: number;
+  flees: number;
 }
 
 // ========== 匹配相关 ==========

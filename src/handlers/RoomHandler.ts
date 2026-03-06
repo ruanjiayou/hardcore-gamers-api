@@ -63,7 +63,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     console.log('广播')
     io.to(`room:${room_id}`).emit('room:message', {
       player_id: player._id,
-      player_name: player.user_name,
+      player_name: player.nick_name,
       message,
       timestamp: Date.now()
     });
@@ -295,10 +295,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     const room = await roomService.destroyRoom(data.room_id);
     if (room) {
       // 房间已解散，通知游戏中的其他玩家
-      socket.leave(`game:${room?.gameId}`);
-      io.to(`game:${room?.gameId}`).emit('lobby:room-destroyed', {
-        room_id: room._id
-      });
+      io.to(`room:${room._id}`).emit('lobby:room-destroyed', {});
       cb(true);
     } else {
       cb(false);

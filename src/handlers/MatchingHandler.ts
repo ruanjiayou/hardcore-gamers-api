@@ -15,14 +15,14 @@ export function setupMatchingHandlers(io: Server, socket: AuthSocket, player_id:
    */
   socket.on(
     'matching:join-queue',
-    async (data: { gameId: string; mode: MatchingMode }, callback: (success: boolean, error?: string) => void) => {
+    async (data: { game_id: string; mode: MatchingMode }, callback: (success: boolean, error?: string) => void) => {
       if (!socket.isLoggedIn) {
         callback(false, '加入匹配需要登陆');
         console.log(`❌ 游客 ${socket.user_id} 尝试加入匹配被拒绝`);
         return;
       }
 
-      const { gameId, mode } = data;
+      const { game_id, mode } = data;
       const player = await playerService.getPlayerById(player_id);
 
       if (!player) {
@@ -33,7 +33,7 @@ export function setupMatchingHandlers(io: Server, socket: AuthSocket, player_id:
       try {
         matchingService.addToQueue({
           player_id,
-          game_id: gameId,
+          game_id,
           mode,
           createdAt: Date.now()
         });
@@ -41,15 +41,15 @@ export function setupMatchingHandlers(io: Server, socket: AuthSocket, player_id:
         playerService.updatePlayerStatus(player_id, 'in-lobby');
 
         socket.emit('matching:joined-queue', {
-          gameId,
+          game_id,
           mode,
-          queueInfo: matchingService.getQueueInfo(gameId)
+          queueInfo: matchingService.getQueueInfo(game_id)
         });
 
         callback(true);
-        console.log(`📍 玩家 ${player.user_id} 加入匹配队列 (游戏: ${gameId}, 模式: ${mode})`);
+        console.log(`📍 玩家 ${player.user_id} 加入匹配队列 (游戏: ${game_id}, 模式: ${mode})`);
 
-        _tryMatching(io, gameId, player.user_id);
+        _tryMatching(io, game_id, player._id);
       } catch (error) {
         callback(false, '加入匹配失败');
       }
@@ -61,19 +61,19 @@ export function setupMatchingHandlers(io: Server, socket: AuthSocket, player_id:
    */
   socket.on(
     'matching:leave-queue',
-    (data: { gameId: string }, callback: (success: boolean) => void) => {
+    (data: { game_id: string }, callback: (success: boolean) => void) => {
       if (!socket.isLoggedIn) {
         callback(false);
         return;
       }
 
-      const { gameId } = data;
+      const { game_id } = data;
 
       try {
-        matchingService.removeFromQueue(gameId, player_id);
-        socket.emit('matching:left-queue', { gameId });
+        matchingService.removeFromQueue(game_id, player_id);
+        socket.emit('matching:left-queue', { game_id });
         callback(true);
-        console.log(`🚫 玩家 ${socket.user_id} 取消匹配 (游戏: ${gameId})`);
+        console.log(`🚫 玩家 ${socket.user_id} 取消匹配 (游戏: ${game_id})`);
       } catch (error) {
         callback(false);
       }
@@ -83,8 +83,8 @@ export function setupMatchingHandlers(io: Server, socket: AuthSocket, player_id:
   /**
    * 获取匹配队列信息 - 公开
    */
-  socket.on('matching:get-queue-info', (data: { gameId: string }, callback: (queueInfo: any) => void) => {
-    const queueInfo = matchingService.getQueueInfo(data.gameId);
+  socket.on('matching:get-queue-info', (data: { game_id: string }, callback: (queueInfo: any) => void) => {
+    const queueInfo = matchingService.getQueueInfo(data.game_id);
     callback(queueInfo);
   });
 }
@@ -92,9 +92,9 @@ export function setupMatchingHandlers(io: Server, socket: AuthSocket, player_id:
 /**
  * 尝试进行匹配
  */
-function _tryMatching(io: Server, gameId: string, playerName: string) {
+function _tryMatching(io: Server, game_id: string, player_id: string) {
   setTimeout(async () => {
-    const matched = matchingService.findMatch(gameId, 2);
+    const matched = matchingService.findMatch(game_id, 2);
 
     if (matched) {
       console.log(`✅ 匹配成功: ${matched.length} 个玩家`);
@@ -104,7 +104,7 @@ function _tryMatching(io: Server, gameId: string, playerName: string) {
       if (players[0]) {
         const owner = players[0];
         const room = await roomService.createRoom({
-          gameId,
+          game_id,
           name: `Ranked Match - ${Date.now()}`,
           owner_id: owner?.user_id,
           members: [],
@@ -127,7 +127,7 @@ function _tryMatching(io: Server, gameId: string, playerName: string) {
               .filter(p => p._id !== req.player_id)
               .map(p => ({
                 _id: p._id,
-                user_name: p.user_name,
+                nick_name: p.nick_name,
                 level: p.level,
                 avatar: p.avatar
               }))

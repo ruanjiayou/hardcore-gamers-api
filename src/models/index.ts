@@ -9,7 +9,7 @@ mongoose.connect(config.mongo_url).catch(err => {
 
 export const MGame = mongoose.model<IGame>('games', new mongoose.Schema({
   _id: String,
-  name: String,
+  slug: String,
   title: String,
   desc: String,
   genre: String,
@@ -25,7 +25,7 @@ export const MGame = mongoose.model<IGame>('games', new mongoose.Schema({
 
 export const MRoom = mongoose.model<IRoom>('rooms', new mongoose.Schema({
   _id: String,
-  gameId: String,
+  game_id: String,
   name: String,
   status: String,
   owner_id: String,
@@ -83,7 +83,7 @@ export const MPlayer = mongoose.model<IPlayer & { room_id: string }>('players', 
   game_id: String,
   room_id: String,
   user_id: String,
-  user_name: String,
+  nick_name: String,
   avatar: String,
   title: String,
   level: { type: Number, default: 1 },

@@ -6,7 +6,7 @@
 import type { MatchingRequest } from '../types/index';
 
 export class MatchingService {
-  private matchingQueues: Map<string, MatchingRequest[]> = new Map(); // gameId -> requests
+  private matchingQueues: Map<string, MatchingRequest[]> = new Map();
 
   /**
    * 添加到匹配队列
@@ -23,13 +23,13 @@ export class MatchingService {
   /**
    * 从匹配队列移除
    */
-  removeFromQueue(gameId: string, player_id: string): void {
-    const queue = this.matchingQueues.get(gameId);
+  removeFromQueue(game_name: string, player_id: string): void {
+    const queue = this.matchingQueues.get(game_name);
     if (queue) {
       const index = queue.findIndex(r => r.player_id === player_id);
       if (index !== -1) {
         queue.splice(index, 1);
-        console.log(`🚫 玩家 ${player_id} 取消匹配 (游戏: ${gameId})`);
+        console.log(`🚫 玩家 ${player_id} 取消匹配 (游戏: ${game_name})`);
       }
     }
   }
@@ -38,8 +38,8 @@ export class MatchingService {
    * 执行匹配算法
    * 简单版本：找出匹配条件相近的玩家
    */
-  findMatch(gameId: string, minGroupSize: number = 2, maxWaitTime: number = 30000): MatchingRequest[] | null {
-    const queue = this.matchingQueues.get(gameId);
+  findMatch(game_name: string, minGroupSize: number = 2, maxWaitTime: number = 30000): MatchingRequest[] | null {
+    const queue = this.matchingQueues.get(game_name);
     if (!queue || queue.length < minGroupSize) {
       return null;
     }
@@ -57,11 +57,11 @@ export class MatchingService {
     if (matched.length === minGroupSize || maxWaitTimeExceeded) {
       // 从队列中移除已匹配的
       this.matchingQueues.set(
-        gameId,
+        game_name,
         queue.filter(req => !matched.includes(req))
       );
 
-      console.log(`✅ 匹配成功: ${matched.length} 个玩家 (游戏: ${gameId})`);
+      console.log(`✅ 匹配成功: ${matched.length} 个玩家 (游戏: ${game_name})`);
       return matched;
     }
 
@@ -71,15 +71,15 @@ export class MatchingService {
   /**
    * 获取匹配队列信息
    */
-  getQueueInfo(gameId: string): any {
-    const queue = this.matchingQueues.get(gameId) || [];
+  getQueueInfo(game_name: string): any {
+    const queue = this.matchingQueues.get(game_name) || [];
     return {
-      gameId,
+      game_name,
       queueSize: queue.length,
       averageWaitTime: queue.length > 0
         ? Math.round(
-            (Date.now() - queue[0].createdAt) / 1000
-          )
+          (Date.now() - queue[0].createdAt) / 1000
+        )
         : 0
     };
   }
@@ -89,8 +89,8 @@ export class MatchingService {
    */
   getAllQueuesInfo(): Record<string, any> {
     const result: Record<string, any> = {};
-    for (const [gameId, queue] of this.matchingQueues) {
-      result[gameId] = this.getQueueInfo(gameId);
+    for (const [game_name, queue] of this.matchingQueues) {
+      result[game_name] = this.getQueueInfo(game_name);
     }
     return result;
   }

@@ -20,7 +20,7 @@ export class GameService {
     if (stat) {
       const list = await MRoom.aggregate([
         { $match: { status: { $ne: 'finished' } } },
-        { $group: { _id: '$gameId', rooms: { $sum: 1 }, players: { $sum: { $size: '$members' } } } }])
+        { $group: { _id: '$game_slug', rooms: { $sum: 1 }, players: { $sum: { $size: '$members' } } } }])
       games.forEach(game => {
         const detail = list.find(v => v._id === game._id);
         if (detail) {
@@ -38,8 +38,12 @@ export class GameService {
   /**
    * 按ID获取游戏
    */
-  async getGameById(gameId: string): Promise<IGame | null> {
-    return MGame.findById(gameId).lean(true);
+  async getGameById(game_id: string): Promise<IGame | null> {
+    return MGame.findById(game_id).lean(true);
+  }
+
+  async getGameBySlug(name: string) {
+    return MGame.findOne({ name }).lean(true)
   }
 
   /**
@@ -65,8 +69,8 @@ export class GameService {
   /**
    * 更新游戏信息（房间数、玩家数等）
    */
-  async updateGameStats(gameId: string, data: Partial<IGame>): Promise<void> {
-    await MGame.updateOne({ _id: gameId }, { $set: omit(data, ['_id', 'createdAt']) })
+  async updateGameStats(name: string, data: Partial<IGame>): Promise<void> {
+    await MGame.updateOne({ name }, { $set: omit(data, ['_id', 'createdAt']) })
   }
 
   /**

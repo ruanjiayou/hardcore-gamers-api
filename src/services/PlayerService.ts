@@ -74,14 +74,12 @@ export class PlayerService {
     stats.matches++;
 
     if (isWin) {
-      stats.winnings++;
+      stats.winners++;
     }
-
-    stats.wins_rate = stats.matches > 0 ? stats.winnings / stats.matches : 0;
 
     // 升级逻辑：每赢10局升1级
     const requiredWins = player.level * 10;
-    if (stats.winnings >= requiredWins) {
+    if (stats.winners >= requiredWins) {
       player.level++;
       console.log(`🎉 玩家 ${player.user_id} 升级到 Lv.${player.level}`);
     }

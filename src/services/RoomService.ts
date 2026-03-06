@@ -39,8 +39,8 @@ export class RoomService {
   /**
    * 获取游戏的所有房间
    */
-  async getRoomsByGameId(gameId: string): Promise<IRoom[]> {
-    const rooms = await MRoom.find({ gameId, status: { $ne: 'closed' } }).lean(true);
+  async getRoomsByGameName(name: string): Promise<IRoom[]> {
+    const rooms = await MRoom.find({ name, status: { $ne: 'closed' } }).lean(true);
     return rooms;
   }
 
@@ -169,7 +169,7 @@ export class RoomService {
     const match_id = v7();
     await MMatch.create({
       _id: match_id,
-      game_id: room.gameId,
+      game_id: room.game_id,
       room_id: room._id,
       status: 'playing',
       init_state: state,
@@ -183,7 +183,7 @@ export class RoomService {
     return match_id;
   }
 
-  async gameover(room_id: string, match_id: string, winner_player_id) {
+  async gameover(room_id: string, match_id: string, winner_player_id: string) {
     const room = await MRoom.findOne({ _id: room_id, status: 'playing' }).lean(true);
     if (room) {
       await MRoom.updateOne(

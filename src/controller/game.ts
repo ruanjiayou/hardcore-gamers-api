@@ -21,8 +21,8 @@ router.get('/genre/:genre', async (req, res) => {
 });
 
 // 获取单个游戏
-router.get('/:gameId', async (req, res) => {
-  const game = await gameService.getGameById(req.params.gameId);
+router.get('/:game_id', async (req, res) => {
+  const game = await gameService.getGameById(req.params.game_id);
   if (game) {
     res.json({ code: 0, data: game })
   } else {
@@ -37,8 +37,8 @@ router.post('/', async (req, res) => {
 });
 
 // 更新游戏
-router.put('/:gameId', async (req, res) => {
-  await gameService.updateGameStats(req.params.gameId, req.body)
+router.put('/:game_id', async (req, res) => {
+  await gameService.updateGameStats(req.params.game_id, req.body)
   res.json({ code: 0 })
 });
 
