@@ -5,10 +5,11 @@
 
 import { v7 } from 'uuid';
 import type { IGame } from '../types/index';
-import { MGame, MRoom } from '../models'
+import { MGame, MMatch, MRoom } from '../models'
 import { isEmpty, omit } from 'lodash';
 import redis from '../utils/redis'
 import config from '../config';
+import GameLogics from '../games'
 
 export class GameService {
 
@@ -46,6 +47,20 @@ export class GameService {
     return MGame.findOne({ name }).lean(true)
   }
 
+  async getMatchState(game_id: string, match_id: string) {
+    const game = await MGame.findById(game_id).lean(true);
+    if (!game) {
+      return null;
+    }
+    console.log(game)
+    const match = await MMatch.findById(match_id).lean(true);
+    if (match) {
+      return ({ ...match.curr_state, match_id });
+    } else {
+      const state = GameLogics[game.slug].getInitState('');
+      return { ...state, match_id }
+    }
+  }
   /**
    * 按类型获取游戏
    */

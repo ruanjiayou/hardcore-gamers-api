@@ -31,11 +31,11 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
     cb && cb(games);
   }
   async function getRooms(where: { slug: string }, cb: CB) {
-    const rooms = await roomService.getRoomsByGameName(where.slug);
+    const rooms = await roomService.getRoomsByGameSlug(where.slug);
     cb && cb(rooms);
   }
-  async function getGamePlayer(where: { slug: string }, cb: CB) {
-    const player = await playerService.getOrCreatePlayer(user_id, where.slug);
+  async function getGamePlayer(name: string, cb: CB) {
+    const player = await playerService.getOrCreatePlayer(user_id, name);
     if (player.room_id) {
       const room = await roomService.getRoomById(player.room_id);
       const roomPlayer = room?.members.find(p => p._id === player._id)

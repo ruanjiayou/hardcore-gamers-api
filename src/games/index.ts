@@ -1,5 +1,5 @@
-import Xiangqi from "./xiangqi";
+import xiangqi from "./xiangqi";
 
 export default {
-  Xiangqi,
+  xiangqi,
 }

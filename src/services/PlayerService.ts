@@ -4,7 +4,7 @@
  */
 
 import { v7 } from 'uuid';
-import { MPlayer, MUser } from '../models';
+import { MGame, MPlayer, MUser } from '../models';
 import redis from '../utils/redis'
 import config from '../config';
 import { isEmpty, sumBy } from 'lodash';
@@ -14,7 +14,7 @@ export class PlayerService {
   /**
    * 创建或获取玩家
    */
-  async getOrCreatePlayer(user_id: string, game_id: string) {
+  async getOrCreatePlayer(user_id: string, name: string) {
     // 如果玩家已存在，返回该玩家
     let player = await MPlayer.findOne({ user_id }).lean(true);
     if (player) {
@@ -24,11 +24,15 @@ export class PlayerService {
     if (!user) {
       throw new Error('用户不存在')
     }
+    const game = await MGame.findOne({ $or: [{ _id: name }, { slug: name }] })
+    if (!game) {
+      throw new Error('游戏不存在')
+    }
     // 创建新玩家
     const time = new Date();
     player = await MPlayer.create({
       _id: v7(),
-      game_id,
+      game_id: game._id,
       user_id,
       user_name: user.name,
       status: 1,

@@ -5,10 +5,9 @@ import { IMatch, IMember, IPlayer, IRoom } from "../../types";
 import { cloneDeep } from "lodash";
 
 export default class Xiangqi {
-  static getInitState(room: IRoom) {
-    const player = room.members.find(m => m.user_id === room.owner_id);
+  static getInitState(player_id: string) {
     return {
-      current_turn: player?._id,
+      curr_turn: player_id,
       board: [
         [
           { "type": "r", "color": "black" },
@@ -99,6 +98,6 @@ export default class Xiangqi {
   }
 
   static async finish() {
-    
+
   }
 }

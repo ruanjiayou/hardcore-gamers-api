@@ -33,6 +33,7 @@ export interface IRoom {
   name: string;
   game_id: string;
   owner_id: string;
+  match_id?: string;
   status: string; // 'waiting' | 'ready' | 'playing' | 'closed'
   members: IMember[];
   seats: ISeat[],

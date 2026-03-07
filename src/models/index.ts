@@ -29,6 +29,7 @@ export const MRoom = mongoose.model<IRoom>('rooms', new mongoose.Schema({
   name: String,
   status: String,
   owner_id: String,
+  match_id: String,
   members: [{
     _id: String,
     user_id: String,
