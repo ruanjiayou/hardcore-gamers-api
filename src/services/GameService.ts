@@ -20,8 +20,7 @@ export class GameService {
     const games = await MGame.find().lean(true)
     if (stat) {
       const list = await MRoom.aggregate([
-        { $match: { status: { $ne: 'finished' } } },
-        { $group: { _id: '$game_slug', rooms: { $sum: 1 }, players: { $sum: { $size: '$members' } } } }])
+        { $group: { _id: '$game_id', rooms: { $sum: 1 }, players: { $sum: { $size: '$members' } } } }])
       games.forEach(game => {
         const detail = list.find(v => v._id === game._id);
         if (detail) {

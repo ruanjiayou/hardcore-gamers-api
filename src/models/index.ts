@@ -33,7 +33,7 @@ export const MRoom = mongoose.model<IRoom>('rooms', new mongoose.Schema({
   members: [{
     _id: String,
     user_id: String,
-    user_name: String,
+    nick_name: String,
     title: String,
     status: Number,
     state: String,
