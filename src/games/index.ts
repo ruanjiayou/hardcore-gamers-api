@@ -1,5 +1,9 @@
-import xiangqi from "./xiangqi";
+import xiangqi from "./xiangqi/index";
+import gomoku from "./gomoku";
 
-export default {
+const games: { [key: string]: any } = {
   xiangqi,
+  gomoku,
 }
+
+export default games

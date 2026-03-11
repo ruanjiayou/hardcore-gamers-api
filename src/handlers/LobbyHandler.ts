@@ -8,8 +8,8 @@ import { roomService } from '../services/RoomService';
 import { playerService } from '../services/PlayerService';
 import type { AuthSocket } from '../middleware/auth';
 import { userService } from '../services/UserService';
-import { IPlayer, CB } from '../types';
-import { MRoom } from '../models';
+import { IPlayer, CB, IMember } from '../types';
+import { MPlayer, MRoom } from '../models';
 import constant from '../constant';
 
 export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: string) {
@@ -30,28 +30,28 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
     const games = await gameService.getAllGames(true);
     cb && cb(games);
   }
-  async function getRooms(where: { slug: string }, cb: CB) {
-    const rooms = await roomService.getRoomsByGameSlug(where.slug);
+  async function getRooms(where: { game_id: string }, cb: CB) {
+    const rooms = await roomService.getRoomsByGameId(where.game_id);
     cb && cb(rooms);
   }
+  
   async function getGamePlayer(name: string, cb: CB) {
     const player = await playerService.getOrCreatePlayer(user_id, name);
     if (player.room_id) {
-      const room = await roomService.getRoomById(player.room_id);
-      const roomPlayer = room?.members.find(p => p._id === player._id)
-      cb({ ...roomPlayer, room_id: player.room_id });
+      const room = await MRoom.findById(player.room_id).lean(true);
+      const member = room?.members.find(m => m._id === player._id);
+      cb({ ...player, ...member })
     } else {
       cb(player);
     }
   }
-  async function createRoom(data: { room_id: string; name: string; isPrivate?: boolean; password?: string }, cb: CB) {
+  async function createRoom(data: { slug: string; name: string; isPrivate?: boolean; password?: string }, cb: CB) {
     if (!isLoggedIn) {
       cb(false, undefined, '创建房间需要登陆');
       return;
     }
-
-    const { name, isPrivate, password } = data;
-    const player = await playerService.getOrCreatePlayer(user_id, name);
+    const { name, slug, isPrivate, password } = data;
+    const player = await playerService.getOrCreatePlayer(user_id, slug);
 
     if (!player) {
       cb(false, undefined, '玩家不存在');
@@ -101,61 +101,24 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       return;
     }
 
-    const { room_id, password } = data;
-    const room = await roomService.getRoomById(room_id);
-    if (!room) {
-      cb(false, '房间不存在');
-      return;
-    }
-    let inroom = false;
-    const players = room.members.filter(m => m.type === constant.MEMBER.TYPE.player);
-    if (players.findIndex(p => p.user_id === socket.user_id) !== -1) {
-      inroom = true
-    } else if (players.length >= room.numbers.max) {
-      cb(false, '房间已满');
-      return;
-    }
-
-    let player: IPlayer | null = null;
-    try {
-      player = await playerService.getOrCreatePlayer(user_id, room.game_id);
-    } catch (err: any) {
-      console.log('获取用户错误', err.message)
-    }
-
+    const room = await MRoom.findById(data.room_id).lean(true);
+    const player = await MPlayer.findOne({ user_id, game_id: room?.game_id }).lean(true);
     if (!player) {
-      cb(false, '玩家不存在');
-      return;
+      return cb(false, '玩家不存在')
     }
-
-    // 检查房间状态
-    if (data.type === 'player') {
-      // @ts-ignore
-      if (players.findIndex(p => p._id === player._id) === -1 && (room.status === 'playing' || room.status === 'loading')) {
-        cb(false, '游戏已开始，无法加入');
+    try {
+      const result = await roomService.joinRoom(data.room_id, data.type, player, data.password);
+      if (!result.success) {
+        cb(false, '加入房间失败');
         return;
       }
-    }
-
-    try {
-      let newPlayer: IPlayer | null = null;
-      if (!inroom) {
-        const result = await roomService.joinRoom(room_id, data.type, player, password);
-        if (!result.success) {
-          cb(false, room.isPrivate ? '房间密码错误' : '加入房间失败');
-          return;
-        } else if (result.newPlayer) {
-          newPlayer = result.newPlayer;
-        }
-      }
       // 处理页面刷新 信息丢失
-      socket.room_id = room_id;
+      socket.room_id = data.room_id;
       socket.player_id = player._id;
-      socket.join(`room:${room_id}`);
+      socket.join(`room:${data.room_id}`);
 
-      cb(true, newPlayer);
-      io.to(`room:${room_id}`).emit('room:player-joined', player);
-      console.log(`👤 玩家 ${player.user_id} 加入房间 ${room_id}`);
+      cb(true, { ...player, ...result.newPlayer });
+      io.to(`room:${data.room_id}`).emit('room:player-joined', player);
     } catch (error) {
       cb(false, '加入房间失败');
     }

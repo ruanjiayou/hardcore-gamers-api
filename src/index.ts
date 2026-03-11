@@ -74,7 +74,7 @@ io.use((socket, next) => {
 io.on('connection', (socket: AuthSocket) => {
   const user_id = socket.user_id!;
 
-  console.log(`\n✅ 玩家连接: ${user_id} (${socket.id})`);
+  console.log(`\n✅ 用户连接: ${user_id} (${socket.id})`);
 
   // 更新玩家状态为在线 ❌ 应该是用户服务
   // playerService.updatePlayerStatus(user_id, 'online');

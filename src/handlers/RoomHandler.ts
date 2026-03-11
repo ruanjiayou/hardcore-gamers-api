@@ -3,13 +3,14 @@
  */
 
 import type { Server } from 'socket.io';
-import { CB } from '../types';
+import { CB, IMember } from '../types';
 import { roomService } from '../services/RoomService';
 import type { AuthSocket } from '../middleware/auth';
 import constant from '../constant'
 import { MGame, MMatch, MPlayer } from '../models';
 import GameLogics from '../games'
 import { gameService } from '../services/GameService';
+import { pick } from 'lodash';
 
 export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: string) {
   const isLoggedIn = socket.isLoggedIn;
@@ -30,7 +31,14 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     const { room_id } = data;
     const room = await roomService.getRoomById(room_id);
     let match_id = '';
-    if (room && room?.status === constant.ROOM.STATUS.playing) {
+    if (room) {
+      const members = await MPlayer.find({ _id: { $in: room.members.map(m => m._id) } }).lean(true)
+      room.members = room.members.map(m => {
+        const player = members.find(p => p._id === m._id)
+        return { ...player, ...m }
+      });
+    }
+    if (room && room.status === constant.ROOM.STATUS.playing) {
       const match = await MMatch.findOne({ room_id, status: constant.MATCH.STATUS.playing }, { _id: 1 }).lean();
       match_id = match ? match._id : ''
     }
@@ -53,7 +61,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       callback(false);
       return;
     }
-    const player = room.members.find(p => p.type === constant.MEMBER.TYPE.player && p.user_id === user_id);
+    const player = await MPlayer.findOne({ user_id, game_id: room.game_id }).lean(true)
 
     if (!player) {
       callback(false);
@@ -91,7 +99,6 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       }
 
       callback(true);
-
       io.to(`room:${room_id}`).emit('room:game-started', {
         room_id,
         match_id,
@@ -175,11 +182,15 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
 
     try {
       const { success, roomReady } = await roomService.playerReady(room_id, ready, data.player_id);
-
       callback(success);
       if (success) {
         io.to(`room:${room_id}`).emit('room:room-ready', roomReady)
         console.log(`🏠 房间 ${room_id} ${roomReady ? "已就绪" : "未就绪"}`);
+      }
+      if (roomReady) {
+        startGame(data, () => {
+          console.log('自动开始')
+        });
       }
     } catch (error) {
       callback(false);
@@ -194,14 +205,13 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     if (match) {
       const game = await MGame.findById(match.game_id).lean(true);
       if (!game) return callback(false)
-      // TODO: 逻辑判断
       const { success, gameover, data } = await GameLogics[game.slug].excuteMove(match, movement)
       callback(success);
       if (success) {
         io.to(`room:${match.room_id}`).emit('room:player-action', data);
         if (gameover) {
           await roomService.gameover(match.room_id, match_id, movement.player_id)
-          io.to(`room:${match.room_id}`).emit('room:game-over', player)
+          io.to(`room:${match.room_id}`).emit('room:game-over', pick(player, ['_id', 'nick_name']))
         }
       }
     } else {
@@ -244,22 +254,22 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    */
   async function surrender(data: { room_id: string; match_id: string, player_id: string }, callback: (success: boolean) => void) {
     const room = await roomService.getRoomById(data.room_id);
-    if (!room) {
+    if (!room || room.status !== 'playing') {
       callback(false);
       return;
     }
-    const player = room.members.find(p => p._id === data.player_id);
-    if (!player) {
+    const player = await MPlayer.findById(data.player_id).lean(true);
+    if (!player || player.user_id !== user_id) {
       callback(false);
       return;
     }
     try {
-      await roomService.surrender(data);
       callback(true);
-      console.log(`🏡 ${room._id} 👤 玩家 ${player.user_id} 认输`);
-      const winner = room.members.find(m => m.type === 'player' && m._id !== data.player_id)
-      await roomService.gameover(data.room_id, data.match_id, winner?._id as string)
-      io.to(`room:${data.room_id}`).emit('room:game-over', winner)
+      console.log(`🏡 ${room._id} 👤 玩家 ${player._id} 认输`);
+      const winner_id = room.members.filter(m => m.type === constant.MEMBER.TYPE.player).map(m => m._id).find(_id => _id !== data.player_id)
+      await roomService.gameover(data.room_id, data.match_id, winner_id as string)
+      const winner = await MPlayer.findById(winner_id).lean(true)
+      io.to(`room:${data.room_id}`).emit('room:game-over', pick(winner, ['_id', 'nick_name']))
     } catch (error) {
       console.log(error, 'err')
       callback(false);
@@ -284,10 +294,10 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       socket.leave(`room:${data.room_id}`);
       socket.leave(`user:${user_id}`);
       const player = await MPlayer.findById(data.player_id).lean(true)
-      io.to(`room:${data.room_id}`).emit('room:player-leaved', player);
+      io.to(`room:${data.room_id}`).emit('room:player-leaved', pick(player, ['_id', 'nick_name']));
       console.log(`👤 玩家 ${data.player_id} 离开房间 ${data.room_id}`);
       players.forEach(p => {
-        io.to(`user:${p.user_id}`).emit('room:player-change', p);
+        io.to(`user:${user_id}`).emit('room:player-change', p);
       })
     } catch (error) {
       console.log(error, 'err')

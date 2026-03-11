@@ -53,7 +53,7 @@ export interface IMatch {
   status: string; // waiting playing aborted finished
   init_state: any;
   curr_state: any;
-  players: IPlayer[];
+  players: IMember[];
   movements: any[];
   createdAt: Date;
   updatedAt: Date;
@@ -93,13 +93,13 @@ export interface IPlayer {
   stats: PlayerStats;
   online: boolean;
   status: number; // 1 normal 2 muted 3 banned
+  state: string;
   createdAt: Date;
   updatedAt: Date;
 }
-export interface IMember extends IPlayer {
-  type: string;
-  state: string;
-  is_robot: boolean; // 是否是人机
+export interface IMember {
+  _id: string;
+  type: string; // player/viewer
   role?: string; // 角色
 }
 

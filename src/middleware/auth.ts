@@ -33,7 +33,6 @@ export function validateCredentials(username: string, password: string): boolean
 export async function authMiddleware(socket: AuthSocket, next: (err?: Error) => void) {
   const token = socket.handshake.auth.token || socket.handshake.query.token;
   let user_id = socket.handshake.auth.user_id || socket.handshake.query.user_id || '';
-
   if (token) {
     try {
       const data: any = jwt.verify(token, config.secret)
@@ -57,12 +56,8 @@ export async function authMiddleware(socket: AuthSocket, next: (err?: Error) => 
   socket.user_id = user_id;
   socket.redis = redis
   socket.join(`user:${user_id}`)
-  const player = await MPlayer.findOne({ user_id }).lean(true);
-  if (player && player.room_id) {
-    socket.join(`room:${player.room_id}`)
-  }
 
-  console.log(`🔐 玩家认证成功: ${user.name} (${user._id}) | 状态: ${socket.isGuest ? '游客' : '登陆'}`);
+  console.log(`🔐 用户认证成功: ${user.name} (${user._id}) | 状态: ${socket.isGuest ? '游客' : '登陆'}`);
 
   next();
 }

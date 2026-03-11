@@ -6,7 +6,7 @@ import type { Server, Socket } from 'socket.io';
 import { matchingService } from '../services/MatchingService';
 import { playerService } from '../services/PlayerService';
 import { roomService } from '../services/RoomService';
-import type { IPlayer, MatchingMode } from '../types/index';
+import type { IMember, IPlayer, MatchingMode } from '../types/index';
 import type { AuthSocket } from '../middleware/auth';
 
 export function setupMatchingHandlers(io: Server, socket: AuthSocket, player_id: string) {
@@ -123,13 +123,13 @@ function _tryMatching(io: Server, game_id: string, player_id: string) {
         matched.forEach(req => {
           io.to(req.player_id).emit('matching:matched', {
             room_id: room._id,
-            opponents: (room.members as IPlayer[])
+            opponents: (room.members as IMember[])
               .filter(p => p._id !== req.player_id)
               .map(p => ({
                 _id: p._id,
-                nick_name: p.nick_name,
-                level: p.level,
-                avatar: p.avatar
+                // nick_name: p.nick_name,
+                // level: p.level,
+                // avatar: p.avatar
               }))
           });
         });

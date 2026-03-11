@@ -51,7 +51,6 @@ export class GameService {
     if (!game) {
       return null;
     }
-    console.log(game)
     const match = await MMatch.findById(match_id).lean(true);
     if (match) {
       return ({ ...match.curr_state, match_id });

@@ -15,8 +15,12 @@ export class PlayerService {
    * 创建或获取玩家
    */
   async getOrCreatePlayer(user_id: string, name: string) {
+    const game = await MGame.findOne({ $or: [{ _id: name }, { slug: name }] })
+    if (!game) {
+      throw new Error('游戏不存在')
+    }
     // 如果玩家已存在，返回该玩家
-    let player = await MPlayer.findOne({ user_id }).lean(true);
+    let player = await MPlayer.findOne({ user_id, game_id: game._id }).lean(true);
     if (player) {
       return player;
     }
@@ -24,17 +28,13 @@ export class PlayerService {
     if (!user) {
       throw new Error('用户不存在')
     }
-    const game = await MGame.findOne({ $or: [{ _id: name }, { slug: name }] })
-    if (!game) {
-      throw new Error('游戏不存在')
-    }
     // 创建新玩家
     const time = new Date();
     player = await MPlayer.create({
       _id: v7(),
       game_id: game._id,
       user_id,
-      user_name: user.name,
+      nick_name: user.name,
       status: 1,
       online: true,
       state: 'idle',
@@ -92,8 +92,8 @@ export class PlayerService {
   /**
    * 获取排行榜
    */
-  async getLeaderboard(limit: number = 10) {
-    const players = await MPlayer.find().limit(limit).sort({ level: -1, rating: -1 }).lean(true)
+  async getLeaderboard(limit: number = 5) {
+    const players = await MPlayer.find().limit(limit).sort({ score: -1, exp: -1 }).lean(true)
     return players;
   }
 
