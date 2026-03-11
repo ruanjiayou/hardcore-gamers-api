@@ -140,6 +140,14 @@ io.on('connection', (socket: AuthSocket) => {
   });
 });
 
+app.use((req, res) => {
+  if (req.path.startsWith('/lobby')) {
+    res.redirect('/lobby');
+  } else {
+    res.status(404).end('页面不存在')
+  }
+});
+
 /**
  * 启动服务器
  */
