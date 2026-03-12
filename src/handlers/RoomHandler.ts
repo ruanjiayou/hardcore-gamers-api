@@ -6,9 +6,10 @@ import type { Server } from 'socket.io';
 import { CB, IMember } from '../types';
 import { roomService } from '../services/RoomService';
 import type { AuthSocket } from '../middleware/auth';
-import constant, { RoomStatus } from '../constant'
+import constant, { PlayerType, RoomStatus } from '../constant'
 import { MGame, MMatch, MPlayer, MRoom } from '../models';
 import GameLogics from '../games'
+import robots from '../games/robot';
 import { gameService } from '../services/GameService';
 import { pick } from 'lodash';
 
@@ -166,11 +167,12 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
   async function addRobot(data: { room_id: string; }, callback: (success: boolean) => void) {
     const room = await MRoom.findById(data.room_id).lean(true);
     if (room) {
-      const available_robot = await MPlayer.findOne({ game_id: room.game_id, state: constant.PLAYER.STATE.online }).lean(true);
+      const available_robot = await MPlayer.findOne({ game_id: room.game_id, type: constant.PLAYER.TYPE.robot, state: constant.PLAYER.STATE.online }).lean(true);
       if (available_robot) {
         callback(true);
-        await roomService.joinRoom(data.room_id, '', available_robot)
-        await MPlayer.updateOne({ _id: available_robot._id }, { $set: { state: constant.PLAYER.STATE.prepared } })
+        const result = await roomService.joinRoom(data.room_id, '', available_robot)
+        await MPlayer.updateOne({ _id: available_robot._id }, { $set: { room_id: data.room_id, state: constant.PLAYER.STATE.prepared } })
+        io.to(`room:${data.room_id}`).emit('room:player-joined', available_robot);
       } else {
         callback(false)
       }
@@ -223,13 +225,32 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     if (match) {
       const game = await MGame.findById(match.game_id).lean(true);
       if (!game) return callback(false)
-      const { success, gameover, data } = await GameLogics[game.slug].excuteMove(match, movement)
+      const { success, gameover, data, board } = await GameLogics[game.slug].excuteMove(match, movement)
       callback(success);
       if (success) {
         io.to(`room:${match.room_id}`).emit('room:player-action', data);
         if (gameover) {
           await roomService.gameover(match.room_id, match_id, movement.player_id)
-          io.to(`room:${match.room_id}`).emit('room:game-over', pick(player, ['_id', 'nick_name']))
+          io.to(`room:${match.room_id}`).emit('room:game-over', pick(player, ['_id', 'nickname']))
+        } else if (data.next_turn) {
+          const next = await MPlayer.findById(data.next_turn, { type: 1 }).lean(true)
+          if (next?.type === PlayerType.robot) {
+            const robot = robots.getRobot(next._id, game.slug);
+            if (robot) {
+              const move = robot.getBestMove(board, data.point.color === 'black' ? 1 : 2);
+              if (move) {
+                const new_match = await MMatch.findOne({ _id: match_id }).lean(true);
+                const result = await GameLogics[game.slug].excuteMove(new_match, { player_id: next._id, point: { x: move.x - 7, y: move.y - 7, color: data.point.color === 'black' ? 'white' : 'black' } })
+                if (result.success) {
+                  io.to(`room:${match.room_id}`).emit('room:player-action', result.data);
+                }
+                if (result.gameover) {
+                  await roomService.gameover(match.room_id, match_id, next._id)
+                  io.to(`room:${match.room_id}`).emit('room:game-over', pick(next, ['_id', 'nickname']))
+                }
+              }
+            }
+          }
         }
       }
     } else {
@@ -287,7 +308,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       const winner_id = room.members.filter(m => !m.watch_id).map(m => m._id).find(_id => _id !== data.player_id)
       await roomService.gameover(data.room_id, data.match_id, winner_id as string)
       const winner = await MPlayer.findById(winner_id).lean(true)
-      io.to(`room:${data.room_id}`).emit('room:game-over', pick(winner, ['_id', 'nick_name']))
+      io.to(`room:${data.room_id}`).emit('room:game-over', pick(winner, ['_id', 'nickname']))
     } catch (error) {
       console.log(error, 'err')
       callback(false);
@@ -312,7 +333,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       socket.leave(`room:${data.room_id}`);
       socket.leave(`user:${user_id}`);
       const player = await MPlayer.findById(data.player_id).lean(true)
-      io.to(`room:${data.room_id}`).emit('room:player-leaved', pick(player, ['_id', 'nick_name']));
+      io.to(`room:${data.room_id}`).emit('room:player-leaved', pick(player, ['_id', 'nickname']));
       console.log(`👤 玩家 ${data.player_id} 离开房间 ${data.room_id}`);
       players.forEach(p => {
         io.to(`user:${user_id}`).emit('room:player-change', p);

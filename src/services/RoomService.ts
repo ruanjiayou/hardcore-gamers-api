@@ -8,7 +8,7 @@ import { MGame, MMatch, MPlayer, MRoom } from '../models'
 import { cloneDeep, isEmpty, sumBy } from 'lodash';
 import redis from '../utils/redis'
 import config from '../config';
-import constant, { MatchStatus, PlayerState, RoomStatus } from '../constant'
+import constant, { MatchStatus, PlayerState, PlayerType, RoomStatus } from '../constant'
 import GameLogics from '../games'
 
 export class RoomService {
@@ -97,7 +97,7 @@ export class RoomService {
       console.log(`❌ 房间密码错误: ${room_id}`);
       return { success: false };
     }
-    const newPlayer = { _id: player._id, watch_id, type: player.type, role: '' }
+    const newPlayer = { _id: player._id, watch_id, type: player.type as PlayerType, role: '' }
     GameLogics[game.slug].assignRole(room, newPlayer)
     const diff = { owner_id: room.owner_id, members: cloneDeep(room.members) }
     if (!watch_id && room.members.length === 0) {
@@ -199,6 +199,10 @@ export class RoomService {
   }
 
   async gameover(room_id: string, match_id: string, winner_player_id: string) {
+    const room = await MRoom.findOne({ _id: room_id }, { members: 1 }).lean(true);
+    if (!room) {
+      return;
+    }
     await MRoom.updateOne(
       {
         _id: room_id
@@ -221,11 +225,11 @@ export class RoomService {
             players: match.players.map(p => ({ ...p, score: p._id === winner_player_id ? 1 : -1 })),
           }
         });
-      await MPlayer.bulkWrite(match.players.map(p => ({
+      await MPlayer.bulkWrite(room.members.filter(m => !m.watch_id).map(p => ({
         updateOne: {
           filter: { _id: p._id },
           update: {
-            state: PlayerState.inroom,
+            state: p.type === PlayerType.robot ? PlayerState.prepared : PlayerState.inroom,
             room_id: '',
             $inc: {
               'stats.games': 1,

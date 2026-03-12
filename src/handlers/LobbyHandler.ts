@@ -116,7 +116,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       socket.room_id = data.room_id;
       socket.player_id = player._id;
       socket.join(`room:${data.room_id}`);
-      await MPlayer.updateOne({ _id: player._id }, { $set: { state: constant.PLAYER.STATE.inroom } })
+      await MPlayer.updateOne({ _id: player._id }, { $set: { state: constant.PLAYER.STATE.inroom, room_id: data.room_id } })
       cb(true, { ...player, ...result.newPlayer });
       io.to(`room:${data.room_id}`).emit('room:player-joined', player);
     } catch (error) {

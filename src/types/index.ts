@@ -1,4 +1,4 @@
-import { RoomStatus, GameGenre, MatchStatus } from "../constant";
+import { RoomStatus, GameGenre, MatchStatus, PlayerState, PlayerType } from "../constant";
 
 export type CB = Function;
 /**
@@ -101,6 +101,7 @@ export interface IPlayer {
 }
 export interface IMember {
   _id: string;
+  type: PlayerType;
   watch_id: string; // player/viewer
   role?: string; // 角色
   team?: string; // 队伍

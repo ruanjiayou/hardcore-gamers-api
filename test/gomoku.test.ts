@@ -7,7 +7,7 @@ function getNewBoard(map: Map<string, number>) {
   const board = Array(15).fill([]).map(() => Array(15).fill(0));
   map.forEach((v, k) => {
     const [x, y] = k.split('|').map(n => parseInt(n, 10));
-    board[y + 7][x + 7] = v;
+    board[x + 7][y + 7] = v;
   })
   return board;
 }

@@ -38,6 +38,7 @@ export class PlayerService {
       nickname: user.name,
       status: 1,
       atline: true,
+      type: constant.PLAYER.TYPE.player,
       state: constant.PLAYER.STATE.online,
       avatar: user.avatar,
       createdAt: time,

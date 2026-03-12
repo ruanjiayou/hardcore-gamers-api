@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import constant from "../../constant";
+import constant, { PlayerType } from "../../constant";
 import { MMatch, MPlayer } from "../../models";
 import { IMatch, IMember, IPlayer, IRoom } from "../../types";
 import { cloneDeep } from "lodash";
@@ -17,7 +17,14 @@ export default class Gomoku {
   static assignRoles(players: IPlayer[]) {
     return players.map((p, idx) => ({ _id: p._id, role: idx === 0 ? 'black' : 'white', score: 0, is_winner: false }));
   }
-
+  static getNewBoard(map: Map<string, string>) {
+    const board = Array(15).fill([]).map(() => Array(15).fill(0));
+    map.forEach((v, k) => {
+      const [x, y] = k.split('|').map(n => parseInt(n, 10));
+      board[x + 7][y + 7] = !v ? 0 : (v === 'black' ? 1 : 2);
+    })
+    return board;
+  }
   //  服务器输入输出都是idx
   static async excuteMove(match: IMatch, movement: { player_id: string; point: { x: number, y: number, color: string } }) {
     const next = match.players.find(p => p._id !== movement.player_id);
@@ -26,7 +33,6 @@ export default class Gomoku {
     let gameover = false;
     // 需要深克隆,不然修改位置部分失败
     const curr_state = cloneDeep(match.curr_state);
-
     const player = match.players.find(p => p._id === player_id);
     if (!player || player.role !== point.color || curr_state.curr_turn !== player._id) {
       return { success: false };
@@ -36,8 +42,12 @@ export default class Gomoku {
     const diff: any = { $set: { curr_state, updatedAt: new Date() }, $push: { movements: { ...movement, timestamp: Date.now() } } }
     gameover = this.checkWin(curr_state, point)
     await MMatch.updateOne({ _id: match._id }, diff);
-
-    return { success: true, gameover, data: { curr_turn: movement.player_id, next_turn: next?._id, point } }
+    return {
+      success: true,
+      gameover,
+      data: { curr_turn: movement.player_id, next_turn: !gameover ? next?._id : '', point },
+      board: this.getNewBoard(new Map(Object.entries(curr_state.board))),
+    }
   }
 
   static checkWin(state: any, point: { x: number, y: number, color: string }): boolean {

@@ -1,7 +1,7 @@
 // 五子棋AI类
 export default class GomokuAI {
-  rows: number;
-  cols: number;
+  width: number;
+  height: number;
   empty: 0
   player1: number;
   player2: number;
@@ -10,9 +10,9 @@ export default class GomokuAI {
   transTable: Map<number, any>;
   dirs: number[][];
 
-  constructor(rows: number = 15, cols: number = 15) {
-    this.rows = rows;
-    this.cols = cols;
+  constructor(width: number = 15, height: number = 15) {
+    this.width = width;
+    this.height = height;
     this.empty = 0;      // 空位标记
     this.player1 = 1;    // 黑棋（通常AI执黑，可根据需要调整）
     this.player2 = 2;    // 白棋
@@ -29,14 +29,14 @@ export default class GomokuAI {
     };
 
     // Zobrist 哈希表
-    this.zobrist = new Zobrist(rows, cols, 3); // 3种状态（空、黑、白）
+    this.zobrist = new Zobrist(width, height, 3); // 3种状态（空、黑、白）
     this.transTable = new Map(); // 置换表 { hash: { depth, score, flag, bestMove } }
 
     // 方向向量：水平、垂直、对角线、反对角线
     this.dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
   }
 
-  // 公开接口：传入当前棋盘（二维数组），当前要走的玩家（1或2），搜索深度，返回最佳落子 { row, col }
+  // 公开接口：传入当前棋盘（二维数组），当前要走的玩家（1或2），搜索深度，返回最佳落子 { x, y }
   getBestMove(board: number[][], currentPlayer: number, depth = 4) {
     // 初始化走法列表
     let moves = this.generateMoves(board);
@@ -50,9 +50,9 @@ export default class GomokuAI {
       let bestScore = -Infinity;
       for (let move of moves) {
         // 尝试落子
-        board[move.row][move.col] = currentPlayer;
+        board[move.x][move.y] = currentPlayer;
         let score = -this.alphaBeta(board, this.opponent(currentPlayer), d - 1, -beta, -alpha);
-        board[move.row][move.col] = this.empty; // 回溯
+        board[move.x][move.y] = this.empty; // 回溯
 
         if (score > bestScore) {
           bestScore = score;
@@ -91,13 +91,13 @@ export default class GomokuAI {
     moves = this.orderMoves(moves);
 
     let bestScore = -Infinity;
-    let bestMove = null;
+    let bestMove: { x: number, y: number } | null = null;
     let flag = 'upper'; // 默认当前节点是上界（因为没更新alpha）
 
     for (let move of moves) {
-      board[move.row][move.col] = player;
+      board[move.x][move.y] = player;
       let score = -this.alphaBeta(board, this.opponent(player), depth - 1, -beta, -alpha);
-      board[move.row][move.col] = this.empty;
+      board[move.x][move.y] = this.empty;
 
       if (score > bestScore) {
         bestScore = score;
@@ -126,20 +126,20 @@ export default class GomokuAI {
 
   // 生成候选走法：只考虑已有棋子周围2格内的空位
   generateMoves(board: number[][]) {
-    let moves = [];
-    let visited = Array(this.rows).fill([]).map(() => Array(this.cols).fill(false));
+    let moves: { x: number, y: number }[] = [];
+    let visited = Array(this.width).fill([]).map(() => Array(this.height).fill(false));
 
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c < this.cols; c++) {
+    for (let r = 0; r < this.width; r++) {
+      for (let c = 0; c < this.height; c++) {
         if (board[r][c] !== this.empty) {
           // 周围2格内
           for (let dr = -2; dr <= 2; dr++) {
             for (let dc = -2; dc <= 2; dc++) {
               let nr = r + dr, nc = c + dc;
-              if (nr >= 0 && nr < this.rows && nc >= 0 && nc < this.cols &&
+              if (nr >= 0 && nr < this.width && nc >= 0 && nc < this.height &&
                 board[nr][nc] === this.empty && !visited[nr][nc]) {
                 visited[nr][nc] = true;
-                moves.push({ row: nr, col: nc });
+                moves.push({ x: nr, y: nc });
               }
             }
           }
@@ -147,27 +147,27 @@ export default class GomokuAI {
       }
     }
     // 如果棋盘为空（第一步），返回中心点
-    if (moves.length === 0 && this.rows > 0 && this.cols > 0) {
-      moves.push({ row: Math.floor(this.rows / 2), col: Math.floor(this.cols / 2) });
+    if (moves.length === 0 && this.width > 0 && this.height > 0) {
+      moves.push({ x: Math.floor(this.width / 2), y: Math.floor(this.height / 2) });
     }
     return moves;
   }
 
   // 简单走法排序：按距离棋盘中心距离升序（中心优先）
-  orderMoves(moves: { row: number, col: number }[]) {
-    let center = { row: (this.rows - 1) / 2, col: (this.cols - 1) / 2 };
+  orderMoves(moves: { x: number, y: number }[]) {
+    let center = { x: (this.width - 1) / 2, y: (this.height - 1) / 2 };
     return moves.sort((a, b) => {
-      let da = Math.hypot(a.row - center.row, a.col - center.col);
-      let db = Math.hypot(b.row - center.row, b.col - center.col);
+      let da = Math.hypot(a.x - center.x, a.y - center.y);
+      let db = Math.hypot(b.x - center.x, b.y - center.y);
       return da - db;
     });
   }
 
   // 重新排序（用于迭代加深后，把最佳走法放前面）
-  reorderMoves(moves: { row: number, col: number }[], bestMove: { row: number, col: number }) {
+  reorderMoves(moves: { x: number, y: number }[], bestMove: { x: number, y: number }) {
     return moves.sort((a, b) => {
-      if (a.row === bestMove.row && a.col === bestMove.col) return -1;
-      if (b.row === bestMove.row && b.col === bestMove.col) return 1;
+      if (a.x === bestMove.x && a.y === bestMove.y) return -1;
+      if (b.x === bestMove.x && b.y === bestMove.y) return 1;
       return 0;
     });
   }
@@ -175,8 +175,8 @@ export default class GomokuAI {
   // 评估函数：返回从当前玩家视角的分数（正值有利）
   evaluate(board: number[][], player: number) {
     let total = 0;
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c < this.cols; c++) {
+    for (let r = 0; r < this.width; r++) {
+      for (let c = 0; c < this.height; c++) {
         if (board[r][c] !== this.empty) {
           let color = board[r][c];
           let sign = (color === player) ? 1 : -1; // 我方为正，对方为负
@@ -190,7 +190,7 @@ export default class GomokuAI {
             // 正方向延伸
             for (let step = 1; step < 5; step++) {
               let nr = r + step * dx, nc = c + step * dy;
-              if (nr < 0 || nr >= this.rows || nc < 0 || nc >= this.cols) {
+              if (nr < 0 || nr >= this.width || nc < 0 || nc >= this.height) {
                 blockRight++; break;
               }
               if (board[nr][nc] === color) count++;
@@ -200,7 +200,7 @@ export default class GomokuAI {
             // 负方向延伸
             for (let step = 1; step < 5; step++) {
               let nr = r - step * dx, nc = c - step * dy;
-              if (nr < 0 || nr >= this.rows || nc < 0 || nc >= this.cols) {
+              if (nr < 0 || nr >= this.width || nc < 0 || nc >= this.height) {
                 blockLeft++; break;
               }
               if (board[nr][nc] === color) count++;
@@ -236,22 +236,22 @@ export default class GomokuAI {
 
 // Zobrist 哈希类
 class Zobrist {
-  rows: number;
-  cols: number;
+  width: number;
+  height: number;
   states: number;
   table: any;
-  constructor(rows: number, cols: number, states: any) {
-    this.rows = rows;
-    this.cols = cols;
+  constructor(width: number, height: number, states: any) {
+    this.width = width;
+    this.height = height;
     this.states = states; // 棋子状态数（空、黑、白）
     this.table = [];
     this.init();
   }
 
   init() {
-    for (let i = 0; i < this.rows; i++) {
+    for (let i = 0; i < this.width; i++) {
       this.table[i] = [];
-      for (let j = 0; j < this.cols; j++) {
+      for (let j = 0; j < this.height; j++) {
         this.table[i][j] = [];
         for (let s = 0; s < this.states; s++) {
           // 生成随机64位整数（JavaScript用BigInt模拟，但简单起见用普通整数）
@@ -264,8 +264,8 @@ class Zobrist {
   // 根据当前棋盘计算哈希值
   hash(board: number[][]) {
     let h = 0;
-    for (let i = 0; i < this.rows; i++) {
-      for (let j = 0; j < this.cols; j++) {
+    for (let i = 0; i < this.width; i++) {
+      for (let j = 0; j < this.height; j++) {
         let state = board[i][j]; // 0空 1黑 2白
         if (state !== 0) {
           h ^= this.table[i][j][state];
@@ -276,9 +276,9 @@ class Zobrist {
   }
 
   // 更新哈希（落子时使用，可选）
-  update(hash: number, row: number, col: number, oldState: number, newState: number) {
-    hash ^= this.table[row][col][oldState];
-    hash ^= this.table[row][col][newState];
+  update(hash: number, x: number, y: number, oldState: number, newState: number) {
+    hash ^= this.table[x][y][oldState];
+    hash ^= this.table[x][y][newState];
     return hash;
   }
 }
