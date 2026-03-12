@@ -3,12 +3,12 @@
  */
 
 import { v7 } from 'uuid';
-import type { IRoom, IPlayer, RoomStatus, IRoleConfig, IMember } from '../types/index';
+import { IRoom, IPlayer, IRoleConfig, IMember } from '../types/index';
 import { MGame, MMatch, MPlayer, MRoom } from '../models'
 import { cloneDeep, isEmpty, sumBy } from 'lodash';
 import redis from '../utils/redis'
 import config from '../config';
-import constant from '../constant'
+import constant, { MatchStatus, PlayerState, RoomStatus } from '../constant'
 import GameLogics from '../games'
 
 export class RoomService {
@@ -18,7 +18,7 @@ export class RoomService {
    */
   async createRoom(data: Partial<IRoom>) {
     data._id = v7();
-    data.status = 'waiting'
+    data.status = RoomStatus.waiting;
     data.createdAt = new Date();
     data.updatedAt = new Date();
 
@@ -40,7 +40,7 @@ export class RoomService {
    * 获取游戏的所有房间
    */
   async getRoomsByGameId(game_id: string): Promise<IRoom[]> {
-    const rooms = await MRoom.find({ game_id, status: { $ne: 'closed' } }).lean(true);
+    const rooms = await MRoom.find({ game_id, status: RoomStatus.waiting }).lean(true);
     return rooms;
   }
 
@@ -48,7 +48,7 @@ export class RoomService {
    * 获取所有房间
    */
   async getAllRooms(): Promise<IRoom[]> {
-    const rooms = await MRoom.find({ status: { $ne: 'closed' } }).lean(true);
+    const rooms = await MRoom.find({ status: 1 }).lean(true);
     return rooms;
   }
 
@@ -67,7 +67,7 @@ export class RoomService {
   /**
    * 玩家加入房间 - 支持密码验证
    */
-  async joinRoom(room_id: string, type: string, player: IPlayer, password?: string): Promise<{ success: boolean, newPlayer?: IMember }> {
+  async joinRoom(room_id: string, watch_id: string, player: IPlayer, password?: string): Promise<{ success: boolean, newPlayer?: IMember }> {
     const room = await MRoom.findById(room_id).lean(true);
     if (!room) return { success: false };
     const game = await MGame.findById(room.game_id).lean(true)
@@ -77,8 +77,8 @@ export class RoomService {
     if (room.members.some(p => p._id === player._id)) {
       return { success: true };
     }
-    const players = room.members.filter(m => m.type === constant.MEMBER.TYPE.player);
-    if (type === 'player') {
+    const players = room.members.filter(m => !m.watch_id);
+    if (!watch_id) {
       // 检查房间是否已满
       if (players.length >= room.numbers.max) {
         console.log(`❌ 房间已满: ${room_id}`);
@@ -86,7 +86,7 @@ export class RoomService {
       }
 
       // 检查房间状态
-      if (room.status === 'playing' || room.status === 'loading') {
+      if (room.status !== RoomStatus.waiting) {
         console.log(`❌ 房间游戏已开始: ${room_id}`);
         return { success: false };
       }
@@ -97,10 +97,10 @@ export class RoomService {
       console.log(`❌ 房间密码错误: ${room_id}`);
       return { success: false };
     }
-    const newPlayer = { _id: player._id, type, role: '' }
+    const newPlayer = { _id: player._id, watch_id, type: player.type, role: '' }
     GameLogics[game.slug].assignRole(room, newPlayer)
     const diff = { owner_id: room.owner_id, members: cloneDeep(room.members) }
-    if (type === constant.MEMBER.TYPE.player && room.members.length === 0) {
+    if (!watch_id && room.members.length === 0) {
       diff.owner_id = player._id;
     }
     diff.members.push(newPlayer)
@@ -120,11 +120,11 @@ export class RoomService {
     const old_list = cloneDeep(room.members.filter(m => m._id === player_id));
     let owner_id = room.owner_id;
     if (player_id === owner_id) {
-      const next = room.members.find(m => m.type === constant.MEMBER.TYPE.player);
+      const next = room.members.find(m => !m.watch_id);
       owner_id = next ? next._id : '';
     }
     await MRoom.updateOne({ _id: room._id }, { $set: { owner_id, members: room.members.filter(m => m._id !== player_id) } })
-    await MPlayer.updateOne({ _id: player_id }, { $set: { room_id: '' } })
+    await MPlayer.updateOne({ _id: player_id }, { $set: { room_id: '', state: PlayerState.online } })
     console.log(`👤 玩家 ${player_id} 离开房间 ${room_id}，当前人数: ${room.members.length - 1}`);
 
     const changes: IMember[] = [];
@@ -148,7 +148,7 @@ export class RoomService {
     if (!game) {
       return '';
     }
-    const players = room.members.filter(m => m.type === constant.MEMBER.TYPE.player);
+    const players = room.members.filter(m => !m.watch_id);
     const player = players.find(p => p._id === player_id);
     if (!player) {
       return '';
@@ -167,7 +167,7 @@ export class RoomService {
       _id: match_id,
       game_id: room.game_id,
       room_id: room._id,
-      status: 'playing',
+      status: MatchStatus.playing,
       init_state: { ...state },
       curr_state: { ...state },
       players: GameLogics[game.slug]?.assignRoles(players),
@@ -176,17 +176,24 @@ export class RoomService {
       stats: {},
     })
 
-    room.status = 'playing';
-    room.startedAt = new Date();
     await MRoom.updateOne({ _id: room_id }, {
       $set: {
         match_id,
-        status: 'playing',
+        status: RoomStatus.playing,
         startedAt: new Date(),
-        members: room.members.map(m => ({ ...m, state: m.type === constant.MEMBER.TYPE.viewer ? 'wating' : 'playing' }))
       }
     })
-    await MPlayer.updateMany({ _id: { $in: players.map(p => p._id) } }, { $set: { state: 'playing', room_id: room_id } });
+    await MPlayer.bulkWrite(room.members.map(m => ({
+      updateOne: {
+        filter: { _id: m._id },
+        update: {
+          $set: {
+            state: m.watch_id ? PlayerState.watching : PlayerState.ingame,
+            room_id: room._id,
+          }
+        }
+      }
+    })))
     console.log(`🎮 房间 ${room_id} 开始游戏，玩家数: ${players.length}`);
     return match_id;
   }
@@ -209,7 +216,7 @@ export class RoomService {
         { _id: match._id },
         {
           $set: {
-            status: 'finished',
+            status: MatchStatus.gameover,
             updatedAt: new Date(),
             players: match.players.map(p => ({ ...p, score: p._id === winner_player_id ? 1 : -1 })),
           }
@@ -218,7 +225,7 @@ export class RoomService {
         updateOne: {
           filter: { _id: p._id },
           update: {
-            state: 'idle',
+            state: PlayerState.inroom,
             room_id: '',
             $inc: {
               'stats.games': 1,
@@ -238,7 +245,7 @@ export class RoomService {
   async destroyRoom(room_id: string) {
     const room = await MRoom.findById(room_id).lean(true);
     if (!room) return;
-    await MRoom.updateOne({ _id: room_id }, { $set: { status: 'finished' } });
+    await MRoom.updateOne({ _id: room_id }, { $set: { status: RoomStatus.deleted } });
     console.log(`🗑️  房间解散: ${room_id}`);
     return room;
   }
@@ -246,17 +253,17 @@ export class RoomService {
   async playerReady(room_id: string, ready: boolean, player_id: string) {
     console.log(`切换准备状态`, player_id, ready)
     const room = await MRoom.findById(room_id).lean(true);
-    if (!room || room.status === 'playing') {
+    if (!room || room.status === RoomStatus.playing) {
       return { success: false, roomReady: false };
     }
-    await MPlayer.updateOne({ _id: player_id }, { $set: { state: ready ? 'ready' : 'idle' } });
-    const ids = room.members.filter(m => m.type === constant.MEMBER.TYPE.player).map(m => m._id);
+    await MPlayer.updateOne({ _id: player_id }, { $set: { state: ready ? constant.PLAYER.STATE.prepared : constant.PLAYER.STATE.inroom } });
+    const ids = room.members.filter(m => !m.watch_id).map(m => m._id);
     const players = await MPlayer.find({ _id: { $in: ids } }, { state: 1 }).lean(true)
-    const readys = sumBy(players, p => p.state === 'ready' ? 1 : 0);
+    const readys = sumBy(players, p => p.state === PlayerState.prepared ? 1 : 0);
 
     const roomReady = readys === players.length && readys >= room.numbers.min
     if (roomReady) {
-      await MRoom.updateOne({ _id: room_id, }, { $set: { status: 'ready' } })
+      await MRoom.updateOne({ _id: room_id, }, { $set: { status: RoomStatus.readied } })
     }
     return { success: true, roomReady };
   }

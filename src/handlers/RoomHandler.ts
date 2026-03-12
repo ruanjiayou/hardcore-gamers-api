@@ -6,8 +6,8 @@ import type { Server } from 'socket.io';
 import { CB, IMember } from '../types';
 import { roomService } from '../services/RoomService';
 import type { AuthSocket } from '../middleware/auth';
-import constant from '../constant'
-import { MGame, MMatch, MPlayer } from '../models';
+import constant, { RoomStatus } from '../constant'
+import { MGame, MMatch, MPlayer, MRoom } from '../models';
 import GameLogics from '../games'
 import { gameService } from '../services/GameService';
 import { pick } from 'lodash';
@@ -19,6 +19,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
   socket.on('room:update-settings', updateRoom);
   socket.on('room:send-message', sendMessage);
   socket.on('room:kick-player', kickPlayer,);
+  socket.on('room:add-robot', addRobot,);
   socket.on('room:leave', leaveRoom);
   socket.on('room:player-ready', playerReadyChange)
   socket.on('room:player-action', playerAction)
@@ -72,7 +73,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     console.log('广播')
     io.to(`room:${room_id}`).emit('room:message', {
       player_id: player._id,
-      player_name: player.nick_name,
+      player_name: player.nickname,
       message,
       timestamp: Date.now()
     });
@@ -161,6 +162,23 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       callback(false);
     }
   }
+
+  async function addRobot(data: { room_id: string; }, callback: (success: boolean) => void) {
+    const room = await MRoom.findById(data.room_id).lean(true);
+    if (room) {
+      const available_robot = await MPlayer.findOne({ game_id: room.game_id, state: constant.PLAYER.STATE.online }).lean(true);
+      if (available_robot) {
+        callback(true);
+        await roomService.joinRoom(data.room_id, '', available_robot)
+        await MPlayer.updateOne({ _id: available_robot._id }, { $set: { state: constant.PLAYER.STATE.prepared } })
+      } else {
+        callback(false)
+      }
+    } else {
+      callback(false)
+    }
+  }
+
   /**
    * 玩家切换准备状态
    * @description 玩家改变自己的状态(只能是非游戏时),准备/取消准备.返回 success 表示是否改变成功.通知房间 roomReady 表示是否所有人已准备(以便房主开始游戏)
@@ -254,7 +272,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    */
   async function surrender(data: { room_id: string; match_id: string, player_id: string }, callback: (success: boolean) => void) {
     const room = await roomService.getRoomById(data.room_id);
-    if (!room || room.status !== 'playing') {
+    if (!room || room.status !== RoomStatus.playing) {
       callback(false);
       return;
     }
@@ -266,7 +284,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     try {
       callback(true);
       console.log(`🏡 ${room._id} 👤 玩家 ${player._id} 认输`);
-      const winner_id = room.members.filter(m => m.type === constant.MEMBER.TYPE.player).map(m => m._id).find(_id => _id !== data.player_id)
+      const winner_id = room.members.filter(m => !m.watch_id).map(m => m._id).find(_id => _id !== data.player_id)
       await roomService.gameover(data.room_id, data.match_id, winner_id as string)
       const winner = await MPlayer.findById(winner_id).lean(true)
       io.to(`room:${data.room_id}`).emit('room:game-over', pick(winner, ['_id', 'nick_name']))

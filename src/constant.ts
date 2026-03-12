@@ -1,27 +1,45 @@
+
+export enum GameGenre {
+  fps = 'fps',
+  rpg = 'rpg',
+  moba = 'moba',
+  card = 'card',
+  puzzle = 'puzzle',
+}
+export enum RoomStatus {
+  waiting = 'waiting',
+  readied = 'readied',
+  playing = 'playing',
+  deleted = 'deleted',
+}
+export enum PlayerState {
+  online = 'online',
+  inroom = 'inroom',
+  ingame = 'ingame',
+  offline = 'offline',
+  prepared = 'prepared',
+  watching = 'watching',
+  matching = 'matching',
+}
+export enum PlayerType {
+  player = 'player',
+  robot = 'robot',
+}
+export enum MatchStatus {
+  waiting = 'waiting',
+  playing = 'playing',
+  aborted = 'aborted',
+  gameover = 'gameover',
+}
 const constant = {
   GAME: {
-    GENRE: {
-      fps: 'fps',
-      moba: 'moba',
-      rpg: 'rpg',
-      card: 'card',
-      puzzle: 'puzzle',
-    }
+    GENRE: GameGenre,
   },
   ROOM: {
-    STATUS: {
-      waiting: 'waiting',
-      ready: 'ready',
-      loading: 'loading',
-      playing: 'playing',
-      deleted: 'deleted',
-    }
+    STATUS: RoomStatus
   },
   MATCH: {
-    STATUS: {
-      playing: 'playing',
-      finished: 'finished',
-    }
+    STATUS: MatchStatus,
   },
   USER: {
     STATUS: {
@@ -31,19 +49,9 @@ const constant = {
     },
   },
   PLAYER: {
-    STATE: {
-      idle: 'idle',
-      ready: 'ready',
-      playing: 'playing',
-      matching: 'matching',
-    }
+    STATE: PlayerState,
+    TYPE: PlayerType,
   },
-  MEMBER: {
-    TYPE: {
-      player: 'player',
-      viewer: 'viewer'
-    }
-  }
-}
+};
 
 export default constant

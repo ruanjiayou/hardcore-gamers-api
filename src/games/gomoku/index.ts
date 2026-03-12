@@ -12,7 +12,7 @@ export default class Gomoku {
     }
   }
   static assignRole(room: IRoom, player: IMember) {
-    player.role = room.members.filter(m => m.type === constant.MEMBER.TYPE.player).length === 0 ? 'black' : 'white'
+    player.role = room.members.filter(m => !m.watch_id).length === 0 ? 'black' : 'white'
   }
   static assignRoles(players: IPlayer[]) {
     return players.map((p, idx) => ({ _id: p._id, role: idx === 0 ? 'black' : 'white', score: 0, is_winner: false }));

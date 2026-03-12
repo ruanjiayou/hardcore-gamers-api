@@ -1,3 +1,5 @@
+import { RoomStatus, GameGenre, MatchStatus } from "../constant";
+
 export type CB = Function;
 /**
  * 游戏大厅系统的类型定义
@@ -14,7 +16,7 @@ export interface IGame {
   title: string;
   desc: string;
   numbers: { min: number, max: number };
-  genre: 'fps' | 'moba' | 'rpg' | 'card' | 'puzzle';
+  genre: GameGenre;
   icon: string;
   status: number;
   createdAt: Date;
@@ -25,7 +27,6 @@ export interface IGame {
 }
 
 // ========== 房间相关 ==========
-export type RoomStatus = 'waiting' | 'loading' | 'playing' | 'closed';
 
 // 更新 Room 接口
 export interface IRoom {
@@ -34,7 +35,7 @@ export interface IRoom {
   game_id: string;
   owner_id: string;
   match_id?: string;
-  status: string; // 'waiting' | 'ready' | 'playing' | 'closed'
+  status: RoomStatus;
   members: IMember[];
   seats: ISeat[],
   numbers: { min: number, max: number };
@@ -48,9 +49,9 @@ export interface IRoom {
 
 export interface IMatch {
   _id: string;
-  room_id: string,
-  game_id: string,
-  status: string; // waiting playing aborted finished
+  room_id: string;
+  game_id: string;
+  status: MatchStatus;
   init_state: any;
   curr_state: any;
   players: IMember[];
@@ -80,9 +81,10 @@ export interface ISeat {
 // ========== 玩家相关 ==========
 export interface IPlayer {
   _id: string;
+  type: string; // player robot
   user_id: string;
   game_id: string;
-  nick_name: string;
+  nickname: string;
   avatar: string;
 
   title: string; // 称号
@@ -91,7 +93,7 @@ export interface IPlayer {
   exp: number; // 经验值
   max_level: number;
   stats: PlayerStats;
-  online: boolean;
+  atline: boolean;
   status: number; // 1 normal 2 muted 3 banned
   state: string;
   createdAt: Date;
@@ -99,8 +101,9 @@ export interface IPlayer {
 }
 export interface IMember {
   _id: string;
-  type: string; // player/viewer
+  watch_id: string; // player/viewer
   role?: string; // 角色
+  team?: string; // 队伍
 }
 
 export interface PlayerStats {

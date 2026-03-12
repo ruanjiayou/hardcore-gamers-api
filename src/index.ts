@@ -71,7 +71,7 @@ io.use((socket, next) => {
 /**
  * Socket.io 连接处理
  */
-io.on('connection', (socket: AuthSocket) => {
+io.on('connection', async (socket: AuthSocket) => {
   const user_id = socket.user_id!;
 
   console.log(`\n✅ 用户连接: ${user_id} (${socket.id})`);
@@ -82,16 +82,9 @@ io.on('connection', (socket: AuthSocket) => {
   // 加入玩家专属的 Socket.io 房间
   socket.join(user_id);
 
+  // 不能异步,不然获取用户信息超时
   const key = config.prefix + 'stats:users'
-  redis
-    .ttl(key)
-    .then(async (ttl) => {
-      if (ttl === -2) {
-        await userService.getStats()
-      } else {
-        await redis.pipeline().hincrby(key, 'total', 1).expire(key, config.expires).exec()
-      }
-    })
+  redis.del(key);
   // 广播用户上线
   if (socket.room_id) {
     io.to(`room:${socket.room_id}`).emit('room:player-network', { player_id: socket.player_id, online: true, timestamp: Date.now() });
@@ -114,21 +107,14 @@ io.on('connection', (socket: AuthSocket) => {
   /**
    * 断开连接处理
    */
-  socket.on('disconnect', (reason) => {
+  socket.on('disconnect', async (reason) => {
     console.log(reason)
     // 更新玩家状态
     // playerService.updatePlayerStatus(user_id, 'online'); // 实际应该设置为离线，但这里简化处理
 
     const key = config.prefix + 'stats:users'
-    redis
-      .ttl(key)
-      .then(async (ttl) => {
-        if (ttl === -2) {
-          await userService.getStats()
-        } else {
-          await redis.pipeline().hincrby(key, 'total', -1).expire(key, config.expires).exec()
-        }
-      })
+    await redis.del(key);
+    await userService.getStats()
     // 广播玩家离线
     if (socket.room_id) {
       io.to(`room:${socket.room_id}`).emit('room:player-network', { player_id: socket.player_id, online: false, timestamp: Date.now() });

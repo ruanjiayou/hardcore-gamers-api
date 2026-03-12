@@ -8,6 +8,7 @@ import { MGame, MPlayer, MUser } from '../models';
 import redis from '../utils/redis'
 import config from '../config';
 import { isEmpty, sumBy } from 'lodash';
+import constant, { PlayerState, RoomStatus } from '../constant';
 
 export class PlayerService {
 
@@ -34,10 +35,10 @@ export class PlayerService {
       _id: v7(),
       game_id: game._id,
       user_id,
-      nick_name: user.name,
+      nickname: user.name,
       status: 1,
-      online: true,
-      state: 'idle',
+      atline: true,
+      state: constant.PLAYER.STATE.online,
       avatar: user.avatar,
       createdAt: time,
       updatedAt: time,
@@ -92,9 +93,14 @@ export class PlayerService {
   /**
    * 获取排行榜
    */
-  async getLeaderboard(limit: number = 5) {
-    const players = await MPlayer.find().limit(limit).sort({ score: -1, exp: -1 }).lean(true)
-    return players;
+  async getLeaderboard(slug: string, limit: number = 5) {
+    const game = await MGame.findOne({ slug }).lean(true);
+    if (game) {
+      const players = await MPlayer.find({ game_id: game._id }).limit(limit).sort({ score: -1, exp: -1 }).lean(true)
+      return players;
+    } else {
+      return [];
+    }
   }
 
   /**
@@ -106,12 +112,14 @@ export class PlayerService {
     if (isEmpty(stats)) {
       const players = await MPlayer.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
 
-      const in_room = sumBy(players.filter(v => v.status === 'in-room'), 'count');
-      const in_game = sumBy(players.filter(v => v.status === 'in-game'), 'count');
+      const total = sumBy(players, 'count');
+      const atline = await MPlayer.countDocuments({ atline: true });
+      const playing = sumBy(players, (p) => [PlayerState.ingame, PlayerState.ingame, PlayerState.prepared].includes(p._id) ? p.count : 0);
+
       stats = {
-        total: sumBy(players, 'count'),
-        online: in_game + in_room,
-        in_room, in_game,
+        total,
+        atline,
+        playing,
       };
       await redis.pipeline().hmset(key, stats).expire(key, config.expires).exec()
     }

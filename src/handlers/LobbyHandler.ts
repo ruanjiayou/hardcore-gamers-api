@@ -34,7 +34,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
     const rooms = await roomService.getRoomsByGameId(where.game_id);
     cb && cb(rooms);
   }
-  
+
   async function getGamePlayer(name: string, cb: CB) {
     const player = await playerService.getOrCreatePlayer(user_id, name);
     if (player.room_id) {
@@ -92,7 +92,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       cb(false, undefined, '创建房间失败');
     }
   }
-  async function joinRoom(data: { room_id: string; type: 'player' | 'viewer', password?: string }, cb: CB) {
+  async function joinRoom(data: { room_id: string; watch_id: string, password?: string }, cb: CB) {
     if (!cb) {
       return;
     }
@@ -107,7 +107,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       return cb(false, '玩家不存在')
     }
     try {
-      const result = await roomService.joinRoom(data.room_id, data.type, player, data.password);
+      const result = await roomService.joinRoom(data.room_id, data.watch_id, player, data.password);
       if (!result.success) {
         cb(false, '加入房间失败');
         return;
@@ -116,7 +116,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       socket.room_id = data.room_id;
       socket.player_id = player._id;
       socket.join(`room:${data.room_id}`);
-
+      await MPlayer.updateOne({ _id: player._id }, { $set: { state: constant.PLAYER.STATE.inroom } })
       cb(true, { ...player, ...result.newPlayer });
       io.to(`room:${data.room_id}`).emit('room:player-joined', player);
     } catch (error) {
@@ -132,12 +132,12 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
     const userInfo = await userService.getInfoById(socket.user_id);
     cb(userInfo);
   }
-  async function getLeaderboard(data: { limit?: number }, cb: CB) {
+  async function getLeaderboard(data: { slug: string, limit?: number }, cb: CB) {
     if (!cb) {
       return;
     }
-    const limit = data.limit || 10;
-    const leaderboard = (await playerService.getLeaderboard(limit)).map((item, index) => ({
+    const limit = data.limit || 5;
+    const leaderboard = (await playerService.getLeaderboard(data.slug, limit)).map((item, index) => ({
       ...item,
       rank: index + 1
     }));
