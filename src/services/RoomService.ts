@@ -137,6 +137,27 @@ export class RoomService {
     return changes;
   }
 
+  async kickPlayer(room_id: string, player_id: string) {
+    const room = await MRoom.findById(room_id).lean(true);
+    if (!room) {
+      return false;
+    }
+    const member = room.members.find(m => m._id === player_id);
+    if (!member || player_id === room.owner_id) {
+      return false;
+    }
+    await MRoom.updateOne({ _id: room_id }, { $set: { members: room.members.filter(m => m._id !== player_id) } });
+    await MPlayer.updateOne({ _id: member._id }, { $set: { state: PlayerState.online, room_id: '' } })
+    return true;
+  }
+  async transferOwner(room_id: string, player_id: string) {
+    const room = await MRoom.findById(room_id).lean(true);
+    if (!room) {
+      return false;
+    }
+    await MRoom.updateOne({ _id: room_id }, { $set: { owner_id: player_id } });
+    return true;
+  }
   /**
    * 开始游戏
    */
@@ -230,7 +251,6 @@ export class RoomService {
           filter: { _id: p._id },
           update: {
             state: p.type === PlayerType.robot ? PlayerState.prepared : PlayerState.inroom,
-            room_id: '',
             $inc: {
               'stats.games': 1,
               'stats.matches': 1,

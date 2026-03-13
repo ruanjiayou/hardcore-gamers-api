@@ -22,7 +22,7 @@ export default class GomokuAI {
       FIVE: 1000000,      // 连五
       LIVE_FOUR: 100000,  // 活四
       SLEEP_FOUR: 10000,  // 冲四（死四）
-      LIVE_THREE: 5000,   // 活三
+      LIVE_THREE: 8000,   // 活三
       SLEEP_THREE: 1000,  // 眠三
       LIVE_TWO: 500,      // 活二
       SLEEP_TWO: 100      // 眠二
@@ -78,7 +78,7 @@ export default class GomokuAI {
       if (alpha >= beta) return entry.score;
     }
 
-    // 深度为0 或 直接胜负已分（用快速检测）
+    // 深度为0(搜索达到预定深度) 或 直接胜负已分（用快速检测）
     if (depth === 0) {
       let score = this.evaluate(board, player); // 评估当前玩家视角
       return score;

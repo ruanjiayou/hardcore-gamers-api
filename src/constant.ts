@@ -1,3 +1,23 @@
+const Events = {
+  RoomDetai: '',
+  RoomUpdateSetting: '',
+  RoomDisband: '',
+
+  SendMessage: '',
+
+  PlayerKick: '',
+  PlayerKicked: '',
+  PlayerAddRobot: '',
+  PlayerLeave: '',
+  PlayerLeaved: '',
+  PlayerReady: '',
+  PlayerAction: '',
+  GameStart: '',
+  GameOver: '',
+  GameSurrender: '',
+  GameOfferDraw: '',
+  GameGetState: '',
+} as const;
 
 export enum GameGenre {
   fps = 'fps',
@@ -32,6 +52,7 @@ export enum MatchStatus {
   gameover = 'gameover',
 }
 const constant = {
+  Events,
   GAME: {
     GENRE: GameGenre,
   },

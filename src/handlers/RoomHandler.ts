@@ -19,15 +19,16 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
   socket.on('room:detail', getRoomDetail);
   socket.on('room:update-settings', updateRoom);
   socket.on('room:send-message', sendMessage);
-  socket.on('room:kick-player', kickPlayer,);
+  socket.on('room:kick-player', kickPlayer);
+  socket.on('room:transferor-owner', transferOwner);
   socket.on('room:add-robot', addRobot,);
   socket.on('room:leave', leaveRoom);
   socket.on('room:player-ready', playerReadyChange)
   socket.on('room:player-action', playerAction)
   socket.on('room:start-game', startGame);
   socket.on('room:get-match-state', getMatchState);
-  socket.on('room:surrender', surrender);
-  socket.on('room:close', closeRoom)
+  socket.on('room:player-surrender', surrender);
+  socket.on('room:disband', closeRoom)
 
   async function getRoomDetail(data: { room_id: string }, cb: CB) {
     const { room_id } = data;
@@ -101,7 +102,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       }
 
       callback(true);
-      io.to(`room:${room_id}`).emit('room:game-started', {
+      io.to(`room:${room_id}`).emit('room:game-start', {
         room_id,
         match_id,
         curr_turn: data.player_id,
@@ -129,41 +130,46 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     }
 
     const { room_id, player_id } = data;
-    const room = await roomService.getRoomById(room_id);
-
-    if (!room || room.owner_id !== user_id) {
-      callback(false);
-      return;
-    }
-
     try {
-      const success = await roomService.leaveRoom(room_id, player_id);
+      const success = await roomService.kickPlayer(room_id, player_id);
 
       if (!success) {
         callback(false);
         return;
       }
-
-      // 通知被踢的玩家
-      io.to(player_id).emit('room:kicked', {
-        room_id,
-        message: '你已被房主踢出房间'
-      });
+      callback(true);
 
       // 通知房间内其他玩家
-      if (success) {
-        io.to(`room:${room_id}`).emit('room:player-kicked', {
-          player_id: player_id,
-        });
-      }
-
-      callback(true);
-      console.log(`👢 玩家 ${user_id} 被从房间 ${room_id} 踢出`);
+      io.to(`room:${room_id}`).emit('room:player-kicked', { player_id });
+      console.log(`👢 玩家 ${player_id} 被从房间 ${room_id} 踢出`);
     } catch (error) {
+      console.log(error)
       callback(false);
     }
   }
+  /**
+   * 转让房主
+   */
+  async function transferOwner(data: { room_id: string; player_id: string }, callback: (success: boolean) => void) {
+    const user_id = socket.user_id || '';
+    if (!socket.isLoggedIn || !user_id) {
+      callback(false);
+      return;
+    }
 
+    const { room_id, player_id } = data;
+    try {
+      const success = await roomService.transferOwner(room_id, player_id);
+      if (!success) {
+        return callback(false);
+      }
+      callback(true);
+      io.to(`room:${room_id}`).emit('room:transferee-owner', { player_id });
+      console.log(`房间 ${room_id} 被转让给 ${player_id}`)
+    } catch (error) {
+      callback(false)
+    }
+  }
   async function addRobot(data: { room_id: string; }, callback: (success: boolean) => void) {
     const room = await MRoom.findById(data.room_id).lean(true);
     if (room) {
