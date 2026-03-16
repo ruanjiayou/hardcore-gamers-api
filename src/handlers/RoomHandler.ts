@@ -7,11 +7,14 @@ import { CB, IMember } from '../types';
 import { roomService } from '../services/RoomService';
 import type { AuthSocket } from '../middleware/auth';
 import constant, { PlayerType, RoomStatus } from '../constant'
-import { MGame, MMatch, MPlayer, MRoom } from '../models';
+import { MGame, MMatch, MPlayer, MRoom, MUser } from '../models';
 import GameLogics from '../games'
 import robots from '../games/robot';
 import { gameService } from '../services/GameService';
 import { pick } from 'lodash';
+import { oauthService } from '../services/OAuthService';
+import config from '../config';
+import _ from 'lodash';
 
 export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: string) {
   const isLoggedIn = socket.isLoggedIn;
@@ -174,11 +177,31 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     const room = await MRoom.findById(data.room_id).lean(true);
     if (room) {
       const available_robot = await MPlayer.findOne({ game_id: room.game_id, type: constant.PLAYER.TYPE.robot, state: constant.PLAYER.STATE.online }).lean(true);
+      const game = await MGame.findById(room.game_id, { slug: 1 }).lean(true)
       if (available_robot) {
-        callback(true);
-        const result = await roomService.joinRoom(data.room_id, '', available_robot)
-        await MPlayer.updateOne({ _id: available_robot._id }, { $set: { room_id: data.room_id, state: constant.PLAYER.STATE.prepared } })
-        io.to(`room:${data.room_id}`).emit('room:player-joined', available_robot);
+        const user = await MUser.findById(available_robot.user_id).lean(true);
+        if (user) {
+          callback(true);
+          const tokens = await oauthService.getTokens(user);
+          await fetch(`${config.robot_url}/add-robot`, {
+            method: 'post',
+            headers: new Headers({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({
+              player_id: available_robot._id,
+              slug: game?.slug,
+              serverUrl: 'ws://localhost:3000/',
+              tokens,
+              room: _.omit(room, ['members']),
+            }),
+          }).then(async (resp) => {
+            const body = await resp.json()
+            console.log(body)
+          }).catch(err => {
+            console.log(err);
+          });
+        } else {
+          callback(false)
+        }
       } else {
         callback(false)
       }

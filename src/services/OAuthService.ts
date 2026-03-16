@@ -21,10 +21,7 @@ export class OAuthService {
     if (crypto.createHash('md5').update(pass).digest('hex') !== user.pass) {
       throw new Error('账号或密码错误')
     }
-    const token = {
-      access_token: jwt.sign(pick(user, ['_id', 'name']), 'test', { expiresIn: '30h', jwtid: v7() }),
-      refresh_token: '',
-    }
+    const token = await this.getTokens(user);
     return { user: omit(user, ['pass']), token };
   }
 
@@ -43,6 +40,13 @@ export class OAuthService {
     } else {
       console.log(result.error)
       throw new Error('参数错误')
+    }
+  }
+
+  async getTokens(user: IUser) {
+    return {
+      access_token: jwt.sign(pick(user, ['_id', 'name']), 'test', { expiresIn: '30h', jwtid: v7() }),
+      refresh_token: '',
     }
   }
 }

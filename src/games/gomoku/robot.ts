@@ -9,6 +9,49 @@ export default class GomokuAI {
   zobrist: Zobrist;
   transTable: Map<number, any>;
   dirs: number[][];
+  private patterns: Map<number, { regex: RegExp, score: number }[]> = new Map();
+  private preparePatterns(p: number) {
+    const self = p.toString();
+    const opp = p === 1 ? "2" : "1";
+    const e = "0"; // empty
+
+    const pList: [string, number][] = [
+      // 1. 连五
+      [self.repeat(5), this.score.FIVE],
+
+      // 2. 活四 (011110)
+      [e + self.repeat(4) + e, this.score.LIVE_FOUR],
+
+      // 3. 冲四 (211110, 011112, 11011, 11101, 10111)
+      [opp + self.repeat(4) + e, this.score.SLEEP_FOUR],
+      [e + self.repeat(4) + opp, this.score.SLEEP_FOUR],
+      [self.repeat(2) + e + self.repeat(2), this.score.SLEEP_FOUR],
+      [self + e + self.repeat(3), this.score.SLEEP_FOUR],
+      [self.repeat(3) + e + self, this.score.SLEEP_FOUR],
+
+      // 4. 活三 (01110, 010110, 011010)
+      [e + self.repeat(3) + e, this.score.LIVE_THREE],
+      [e + self + e + self.repeat(2) + e, this.score.LIVE_THREE],
+      [e + self.repeat(2) + e + self + e, this.score.LIVE_THREE],
+
+      // 5. 冲三 (补全：211100, 001112, 211010, 210110, 010112, 011012, 以及跳冲三)
+      [opp + self.repeat(3) + e + e, this.score.SLEEP_THREE],
+      [e + e + self.repeat(3) + opp, this.score.SLEEP_THREE],
+      [opp + self.repeat(2) + e + self + e, this.score.SLEEP_THREE],
+      [opp + self + e + self.repeat(2) + e, this.score.SLEEP_THREE],
+      [e + self + e + self.repeat(2) + opp, this.score.SLEEP_THREE],
+      [e + self.repeat(2) + e + self + opp, this.score.SLEEP_THREE],
+      [self + e + e + self.repeat(2), this.score.SLEEP_THREE], // 10011
+      [self.repeat(2) + e + e + self, this.score.SLEEP_THREE], // 11001
+      [self + e + self + e + self, this.score.SLEEP_THREE],    // 10101 (这种也算冲三)
+    ];
+
+    this.patterns.set(p, pList.map(([str, score]) => ({
+      // 使用正则全局匹配，利用前瞻断言 (?=...) 可以匹配重叠棋型而不消耗字符
+      regex: new RegExp(`(?=(${str}))`, 'g'),
+      score
+    })));
+  }
 
   constructor(width: number = 15, height: number = 15) {
     this.width = width;
@@ -16,18 +59,19 @@ export default class GomokuAI {
     this.empty = 0;      // 空位标记
     this.player1 = 1;    // 黑棋（通常AI执黑，可根据需要调整）
     this.player2 = 2;    // 白棋
-
     // 棋型分数（从高到低）
     this.score = {
-      FIVE: 1000000,      // 连五
-      LIVE_FOUR: 100000,  // 活四
-      SLEEP_FOUR: 10000,  // 冲四（死四）
-      LIVE_THREE: 8000,   // 活三
-      SLEEP_THREE: 1000,  // 眠三
-      LIVE_TWO: 500,      // 活二
-      SLEEP_TWO: 100      // 眠二
+      FIVE: 100000,      // 连五
+      LIVE_FOUR: 10000,  // 活四
+      SLEEP_FOUR: 1000,  // 冲四（死四）
+      LIVE_THREE: 1000,  // 活三
+      SLEEP_THREE: 100,  // 眠三
+      LIVE_TWO: 100,     // 活二
+      SLEEP_TWO: 10,     // 眠二
     };
 
+    this.preparePatterns(1);
+    this.preparePatterns(2);
     // Zobrist 哈希表
     this.zobrist = new Zobrist(width, height, 3); // 3种状态（空、黑、白）
     this.transTable = new Map(); // 置换表 { hash: { depth, score, flag, bestMove } }
@@ -53,7 +97,9 @@ export default class GomokuAI {
         board[move.x][move.y] = currentPlayer;
         let score = -this.alphaBeta(board, this.opponent(currentPlayer), d - 1, -beta, -alpha);
         board[move.x][move.y] = this.empty; // 回溯
-
+        if (score >= this.score.FIVE) {
+          return bestMove;
+        }
         if (score > bestScore) {
           bestScore = score;
           bestMove = move;
@@ -124,7 +170,7 @@ export default class GomokuAI {
     return bestScore;
   }
 
-  // 生成候选走法：只考虑已有棋子周围2格内的空位
+  // 生成候选走法：只考虑已有棋子周围1格内的空位
   generateMoves(board: number[][]) {
     let moves: { x: number, y: number }[] = [];
     let visited = Array(this.width).fill([]).map(() => Array(this.height).fill(false));
@@ -132,9 +178,9 @@ export default class GomokuAI {
     for (let r = 0; r < this.width; r++) {
       for (let c = 0; c < this.height; c++) {
         if (board[r][c] !== this.empty) {
-          // 周围2格内
-          for (let dr = -2; dr <= 2; dr++) {
-            for (let dc = -2; dc <= 2; dc++) {
+          // 周围1格内
+          for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
               let nr = r + dr, nc = c + dc;
               if (nr >= 0 && nr < this.width && nc >= 0 && nc < this.height &&
                 board[nr][nc] === this.empty && !visited[nr][nc]) {
@@ -171,64 +217,75 @@ export default class GomokuAI {
       return 0;
     });
   }
-
-  // 评估函数：返回从当前玩家视角的分数（正值有利）
-  evaluate(board: number[][], player: number) {
+  /**
+   * 对单条线进行棋型分析
+   */
+  private scoreLine(line: number[], p: number): number {
+    const s = line.join("");
+    const pSet = this.patterns.get(p)!;
     let total = 0;
-    for (let r = 0; r < this.width; r++) {
-      for (let c = 0; c < this.height; c++) {
-        if (board[r][c] !== this.empty) {
-          let color = board[r][c];
-          let sign = (color === player) ? 1 : -1; // 我方为正，对方为负
-          // 检查四个方向（每个方向只统计一次，避免重复）
-          for (let [dx, dy] of this.dirs) {
-            // 只统计从当前点向正方向延伸，避免重复计算同一条线
-            // 简单起见，我们统计每个棋子各个方向的棋型，但会有重复，但影响不大（可简化）
-            let count = 1;
-            let blockLeft = 0, blockRight = 0;
 
-            // 正方向延伸
-            for (let step = 1; step < 5; step++) {
-              let nr = r + step * dx, nc = c + step * dy;
-              if (nr < 0 || nr >= this.width || nc < 0 || nc >= this.height) {
-                blockRight++; break;
-              }
-              if (board[nr][nc] === color) count++;
-              else if (board[nr][nc] === this.empty) break;
-              else { blockRight++; break; }
-            }
-            // 负方向延伸
-            for (let step = 1; step < 5; step++) {
-              let nr = r - step * dx, nc = c - step * dy;
-              if (nr < 0 || nr >= this.width || nc < 0 || nc >= this.height) {
-                blockLeft++; break;
-              }
-              if (board[nr][nc] === color) count++;
-              else if (board[nr][nc] === this.empty) break;
-              else { blockLeft++; break; }
-            }
-
-            // 根据 count 和阻挡情况赋予分数（简化：只考虑连续棋子数）
-            let block = blockLeft + blockRight;
-            if (count >= 5) total += sign * this.score.FIVE;
-            else if (count === 4) {
-              if (block === 0) total += sign * this.score.LIVE_FOUR;
-              else total += sign * this.score.SLEEP_FOUR;
-            } else if (count === 3) {
-              if (block === 0) total += sign * this.score.LIVE_THREE;
-              else total += sign * this.score.SLEEP_THREE;
-            } else if (count === 2) {
-              if (block === 0) total += sign * this.score.LIVE_TWO;
-              else total += sign * this.score.SLEEP_TWO;
-            }
-            // 更精细的棋型可自行扩展
-          }
-        }
+    for (const item of pSet) {
+      // 使用 matchAll 直接获取所有匹配（包括重叠）
+      const matches = Array.from(s.matchAll(item.regex));
+      if (matches.length > 0) {
+        total += matches.length * item.score;
       }
     }
     return total;
   }
+  // 评估函数：返回从当前玩家视角的分数（正值有利）
+  evaluate(board: number[][], player: number): number {
+    const width = board.length;
+    const height = board[0].length;
+    const opponent = player === 1 ? 2 : 1;
 
+    let playerScore = 0;
+    let opponentScore = 0;
+
+    // 1. 横向扫描 (Rows)
+    for (let y = 0; y < height; y++) {
+      const line: number[] = [];
+      for (let x = 0; x < width; x++) line.push(board[x][y]);
+      playerScore += this.scoreLine(line, player);
+      opponentScore += this.scoreLine(line, opponent);
+    }
+
+    // 2. 纵向扫描 (Cols)
+    for (let x = 0; x < width; x++) {
+      const line = board[x];
+      playerScore += this.scoreLine(line, player);
+      opponentScore += this.scoreLine(line, opponent);
+    }
+
+    // 3. 正斜线 (Top-left to bottom-right)
+    for (let i = 1 - height; i < width; i++) {
+      const line: number[] = [];
+      for (let x = 0; x < width; x++) {
+        const y = x - i;
+        if (y >= 0 && y < height) line.push(board[x][y]);
+      }
+      if (line.length >= 5) {
+        playerScore += this.scoreLine(line, player);
+        opponentScore += this.scoreLine(line, opponent);
+      }
+    }
+
+    // 4. 反斜线 (Top-right to bottom-left)
+    for (let i = 0; i < width + height - 1; i++) {
+      const line: number[] = [];
+      for (let x = 0; x < width; x++) {
+        const y = i - x;
+        if (y >= 0 && y < height) line.push(board[x][y]);
+      }
+      if (line.length >= 5) {
+        playerScore += this.scoreLine(line, player);
+        opponentScore += this.scoreLine(line, opponent);
+      }
+    }
+
+    return playerScore - opponentScore;
+  }
   opponent(player: number) {
     return player === this.player1 ? this.player2 : this.player1;
   }
