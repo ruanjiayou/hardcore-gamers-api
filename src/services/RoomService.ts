@@ -112,29 +112,43 @@ export class RoomService {
   /**
    * 玩家离开房间
    */
-  async leaveRoom(room_id: string, player_id: string): Promise<IMember[]> {
+  async leaveRoom(room_id: string, player_id: string): Promise<IMember | undefined> {
     const room = await MRoom.findById(room_id).lean(true);
-    if (!room) return [];
-    const idx = room.members.findIndex(m => m._id === player_id);
-    if (-1 === idx) return [];
-    const old_list = cloneDeep(room.members.filter(m => m._id === player_id));
+    if (!room) return;
+    const member = room.members.find(m => m._id === player_id);
+    if (!member) return;
     let owner_id = room.owner_id;
     if (player_id === owner_id) {
-      const next = room.members.find(m => !m.watch_id);
+      // 不是观战的玩家称为房主
+      const next = room.members.find(m => !m.watch_id && m.type !== constant.PLAYER.TYPE.robot);
       owner_id = next ? next._id : '';
     }
-    await MRoom.updateOne({ _id: room._id }, { $set: { owner_id, members: room.members.filter(m => m._id !== player_id) } })
+    // 没有玩家,移除所有机器人
+    const player_idx = room.members.findIndex(m => m._id !== player_id && m.type === constant.PLAYER.TYPE.player);
+
+    await MRoom.updateOne({ _id: room._id }, { $set: { owner_id, members: room.members.filter(m => !(m._id === player_id || (player_idx === -1 && constant.PLAYER.TYPE.robot === m.type))) } })
     await MPlayer.updateOne({ _id: player_id }, { $set: { room_id: '', state: PlayerState.online } })
     console.log(`👤 玩家 ${player_id} 离开房间 ${room_id}，当前人数: ${room.members.length - 1}`);
 
-    const changes: IMember[] = [];
-    room.members.forEach(member => {
-      const old = old_list.find(o => o._id === member._id);
-      if (old && old.role !== member.role) {
-        changes.push(member);
-      }
-    })
-    return changes;
+    if (player_idx === -1) {
+      room.members.filter(m => m.type === constant.PLAYER.TYPE.robot).forEach(m => {
+        fetch(`${config.robot_url}/rem-robot`, {
+          method: 'post',
+          headers: new Headers({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            player_id: m._id,
+          }),
+        }).then(async (resp) => {
+          const body = await resp.json()
+          console.log(body)
+        }).catch(err => {
+          console.log(err);
+        });
+
+      })
+    }
+
+    return member;
   }
 
   async kickPlayer(room_id: string, player_id: string) {
@@ -148,6 +162,19 @@ export class RoomService {
     }
     await MRoom.updateOne({ _id: room_id }, { $set: { members: room.members.filter(m => m._id !== player_id) } });
     await MPlayer.updateOne({ _id: member._id }, { $set: { state: PlayerState.online, room_id: '' } })
+    if (member.type === constant.PLAYER.TYPE.robot) {
+      await fetch(`${config.robot_url}/rem-robot`, {
+        method: 'post',
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          player_id: member._id,
+        }),
+      }).then(async (resp) => {
+        const body = await resp.json()
+      }).catch(err => {
+        console.log(err);
+      });
+    }
     return true;
   }
   async transferOwner(room_id: string, player_id: string) {

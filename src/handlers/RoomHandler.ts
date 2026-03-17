@@ -355,7 +355,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     }
 
     try {
-      const players = await roomService.leaveRoom(data.room_id, data.player_id);
+      await roomService.leaveRoom(data.room_id, data.player_id);
       callback(true);
 
       socket.room_id = undefined;
@@ -364,9 +364,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       const player = await MPlayer.findById(data.player_id).lean(true)
       io.to(`room:${data.room_id}`).emit('room:player-leaved', pick(player, ['_id', 'nickname']));
       console.log(`👤 玩家 ${data.player_id} 离开房间 ${data.room_id}`);
-      players.forEach(p => {
-        io.to(`user:${user_id}`).emit('room:player-change', p);
-      })
+
     } catch (error) {
       console.log(error, 'err')
       callback(false);
