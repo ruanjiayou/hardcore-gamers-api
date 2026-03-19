@@ -122,7 +122,7 @@ io.on('connection', async (socket: AuthSocket) => {
     io.emit('lobby:user-network', { user_id, online: false, timestamp: Date.now() });
 
 
-    console.log(`❌ 玩家断开: ${user_id} (${socket.id})\n`);
+    console.log(`❌ 用户断开: ${user_id} (${socket.id})\n`);
   });
 });
 

@@ -191,7 +191,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
               slug: game?.slug,
               serverUrl: 'ws://localhost:3000/',
               tokens,
-              room: _.omit(room, ['members']),
+              room_id: data.room_id,
             }),
           }).then(async (resp) => {
             const body = await resp.json()
