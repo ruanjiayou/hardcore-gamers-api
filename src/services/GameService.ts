@@ -53,7 +53,7 @@ export class GameService {
     }
     const match = await MMatch.findById(match_id).lean(true);
     if (match) {
-      return ({ ...match.curr_state, match_id });
+      return ({ ...match.curr_state, players: match.players, match_id });
     } else {
       const state = GameLogics[game.slug].getInitState('');
       return { ...state, match_id }

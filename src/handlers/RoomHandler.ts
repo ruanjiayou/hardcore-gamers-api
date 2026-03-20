@@ -245,7 +245,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       callback(false);
     }
   }
-  async function playerAction(match_id: string, movement: { player_id: string, from: [number, number], to: [number, number] }, callback: (success: boolean) => void) {
+  async function playerAction(match_id: string, movement: { player_id: string, [key: string]: any }, callback: (success: boolean) => void) {
     const player = await MPlayer.findById(movement.player_id);
     if (!player || player.user_id !== user_id) {
       return callback(false);
@@ -254,32 +254,13 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     if (match) {
       const game = await MGame.findById(match.game_id).lean(true);
       if (!game) return callback(false)
-      const { success, gameover, data, board } = await GameLogics[game.slug].excuteMove(match, movement)
+      const { success, gameover, data } = await GameLogics[game.slug].excuteMove(match, movement)
       callback(success);
       if (success) {
         io.to(`room:${match.room_id}`).emit('room:player-action', data);
         if (gameover) {
           await roomService.gameover(match.room_id, match_id, movement.player_id)
           io.to(`room:${match.room_id}`).emit('room:game-over', pick(player, ['_id', 'nickname']))
-        } else if (data.next_turn) {
-          const next = await MPlayer.findById(data.next_turn, { type: 1 }).lean(true)
-          if (next?.type === PlayerType.robot) {
-            const robot = robots.getRobot(next._id, game.slug);
-            if (robot) {
-              const move = robot.getBestMove(board, data.point.color === 'black' ? 1 : 2);
-              if (move) {
-                const new_match = await MMatch.findOne({ _id: match_id }).lean(true);
-                const result = await GameLogics[game.slug].excuteMove(new_match, { player_id: next._id, point: { x: move.x - 7, y: move.y - 7, color: data.point.color === 'black' ? 'white' : 'black' } })
-                if (result.success) {
-                  io.to(`room:${match.room_id}`).emit('room:player-action', result.data);
-                }
-                if (result.gameover) {
-                  await roomService.gameover(match.room_id, match_id, next._id)
-                  io.to(`room:${match.room_id}`).emit('room:game-over', pick(next, ['_id', 'nickname']))
-                }
-              }
-            }
-          }
         }
       }
     } else {
