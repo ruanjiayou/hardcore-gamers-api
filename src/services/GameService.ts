@@ -46,16 +46,12 @@ export class GameService {
     return MGame.findOne({ name }).lean(true)
   }
 
-  async getMatchState(game_id: string, match_id: string) {
-    const game = await MGame.findById(game_id).lean(true);
-    if (!game) {
-      return null;
-    }
+  async getMatchState(game_slug: string, match_id: string) {
     const match = await MMatch.findById(match_id).lean(true);
     if (match) {
       return ({ ...match.curr_state, players: match.players, match_id });
     } else {
-      const state = GameLogics[game.slug].getInitState('');
+      const state = GameLogics[game_slug].getInitState('');
       return { ...state, match_id }
     }
   }

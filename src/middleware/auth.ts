@@ -9,6 +9,9 @@ import { userService } from '../services/UserService';
 import redis from '../utils/redis'
 import { MPlayer } from '../models';
 import config from '../config';
+import { TicketTool } from '../utils';
+
+const ticketHelper = new TicketTool(config.secret);
 
 export interface AuthSocket extends Socket {
   user_id?: string;
@@ -32,6 +35,7 @@ export function validateCredentials(username: string, password: string): boolean
  */
 export async function authMiddleware(socket: AuthSocket, next: (err?: Error) => void) {
   const token = socket.handshake.auth.token || socket.handshake.query.token;
+  const ticket = socket.handshake.auth.ticket || socket.handshake.query.ticket;
   let user_id = socket.handshake.auth.user_id || socket.handshake.query.user_id || '';
   if (token) {
     try {
@@ -41,6 +45,15 @@ export async function authMiddleware(socket: AuthSocket, next: (err?: Error) => 
       socket.isGuest = false;
     } catch (err) {
       return next(new Error('账号已过期'))
+    }
+  } else if (ticket) {
+    try {
+      const data = JSON.parse(ticketHelper.decrypt(ticket));
+      user_id = data.user_id;
+      socket.isLoggedIn = true;
+      socket.isGuest = false;
+    } catch (err) {
+      return next(new Error('票据错误'))
     }
   } else if (user_id) {
     socket.isGuest = true;

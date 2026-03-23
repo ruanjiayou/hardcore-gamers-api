@@ -9,12 +9,14 @@ import type { AuthSocket } from '../middleware/auth';
 import constant, { PlayerType, RoomStatus } from '../constant'
 import { MGame, MMatch, MPlayer, MRoom, MUser } from '../models';
 import GameLogics from '../games'
-import robots from '../games/robot';
 import { gameService } from '../services/GameService';
 import { pick } from 'lodash';
-import { oauthService } from '../services/OAuthService';
+import jwt from 'jsonwebtoken'
 import config from '../config';
+import { TicketTool } from '../utils';
 import _ from 'lodash';
+
+const ticketHelper = new TicketTool(config.secret);
 
 export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: string) {
   const isLoggedIn = socket.isLoggedIn;
@@ -117,8 +119,8 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     }
   }
 
-  async function getMatchState(data: { game_id: string, match_id: string }, callback: (state: any) => void) {
-    const result = await gameService.getMatchState(data.game_id, data.match_id)
+  async function getMatchState(data: { game_slug: string, match_id: string }, callback: (state: any) => void) {
+    const result = await gameService.getMatchState(data.game_slug, data.match_id)
     callback(result);
   }
 
@@ -182,7 +184,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
         const user = await MUser.findById(available_robot.user_id).lean(true);
         if (user) {
           callback(true);
-          const tokens = await oauthService.getTokens(user);
+          const ticket = ticketHelper.encrypt(JSON.stringify({ user_id: available_robot.user_id, player_id: available_robot._id }));
           await fetch(`${config.robot_url}/add-robot`, {
             method: 'post',
             headers: new Headers({ 'Content-Type': 'application/json' }),
@@ -190,7 +192,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
               player_id: available_robot._id,
               slug: game?.slug,
               serverUrl: 'ws://localhost:3000/',
-              tokens,
+              ticket,
               room_id: data.room_id,
             }),
           }).then(async (resp) => {
@@ -245,17 +247,17 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       callback(false);
     }
   }
-  async function playerAction(match_id: string, movement: { player_id: string, [key: string]: any }, callback: (success: boolean) => void) {
+  async function playerAction(match_id: string, movement: { player_id: string, [key: string]: any }, callback: (result: { success: boolean; message: string }) => void) {
     const player = await MPlayer.findById(movement.player_id);
     if (!player || player.user_id !== user_id) {
-      return callback(false);
+      return callback({ success: false, message: '玩家不存在' });
     }
     const match = await MMatch.findOne({ _id: match_id }).lean(true);
     if (match) {
       const game = await MGame.findById(match.game_id).lean(true);
-      if (!game) return callback(false)
+      if (!game) return callback({ success: false, message: '游戏不存在' })
       const { success, gameover, data } = await GameLogics[game.slug].excuteMove(match, movement)
-      callback(success);
+      callback({ success, message: '' });
       if (success) {
         io.to(`room:${match.room_id}`).emit('room:player-action', data);
         if (gameover) {
@@ -264,7 +266,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
         }
       }
     } else {
-      callback(false)
+      callback({ success: false, message: '对局不存在' })
     }
 
   }

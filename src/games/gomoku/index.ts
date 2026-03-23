@@ -38,7 +38,11 @@ export default class Gomoku {
     if (!player || player.role !== to.role || curr_state.curr_turn !== player._id) {
       return { success: false };
     }
-    curr_state.board[`${to.x}|${to.y}`] = to.role;
+    const position = `${to.x}|${to.y}`
+    if (curr_state.board[position]) {
+      return { success: false, gameover }
+    }
+    curr_state.board[position] = to.role;
     curr_state.curr_turn = next?._id;
     const diff: any = { $set: { curr_state, updatedAt: new Date() }, $push: { movements: { ...movement, timestamp: Date.now() } } }
     gameover = this.checkWin(curr_state, to)
