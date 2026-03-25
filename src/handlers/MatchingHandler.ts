@@ -2,12 +2,13 @@
  * 匹配事件处理 - 支持权限检查
  */
 
-import type { Server, Socket } from 'socket.io';
+import type { Server } from 'socket.io';
 import { matchingService } from '../services/MatchingService';
 import { playerService } from '../services/PlayerService';
 import { roomService } from '../services/RoomService';
 import type { IMember, IPlayer, MatchingMode } from '../types/index';
 import type { AuthSocket } from '../middleware/auth';
+import constant from '../constant';
 
 export function setupMatchingHandlers(io: Server, socket: AuthSocket, player_id: string) {
   /**
@@ -117,7 +118,7 @@ function _tryMatching(io: Server, game_id: string, player_id: string) {
         });
 
         for (let i = 1; i < players.length; i++) {
-          roomService.joinRoom(room._id as string, 'player', players[i]);
+          roomService.joinRoom({ room_id: room._id as string, type: constant.MEMBER.TYPE.player }, players[i]);
         }
 
         matched.forEach(req => {

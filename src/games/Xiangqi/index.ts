@@ -1,4 +1,3 @@
-import assert from "node:assert";
 import constant from "../../constant";
 import { MMatch, MPlayer } from "../../models";
 import { IMatch, IMember, IPlayer, IRoom } from "../../types";
@@ -63,7 +62,7 @@ export default class Xiangqi {
     }
   }
   static assignRole(room: IRoom, player: IMember) {
-    player.role = room.members.filter(m => m.type === constant.PLAYER.TYPE.player).length === 0 ? 'red' : 'black'
+    player.role = room.members.filter(m => m.member_type === constant.MEMBER.TYPE.player).length === 0 ? 'red' : 'black'
   }
   static assignRoles(players: IPlayer[]) {
     return players.map((p, idx) => ({ _id: p._id, role: idx === 0 ? 'red' : 'black', score: 0, is_winner: false }));

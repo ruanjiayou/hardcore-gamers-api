@@ -33,10 +33,10 @@ export const MRoom = mongoose.model<IRoom>('rooms', new mongoose.Schema({
   match_id: String,
   members: [{
     _id: String,
-    watch_id: String,
     role: String,
     team: String,
-    type: { type: String },
+    player_type: { type: String },
+    member_type: { type: String },
   }],
   seats: [{ _id: false, team: String, size: Number }],
   numbers: { min: Number, max: Number },

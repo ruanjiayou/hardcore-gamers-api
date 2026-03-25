@@ -3,15 +3,14 @@
  */
 
 import type { Server } from 'socket.io';
-import { CB, IMember } from '../types';
+import { CB } from '../types';
 import { roomService } from '../services/RoomService';
 import type { AuthSocket } from '../middleware/auth';
-import constant, { PlayerType, RoomStatus } from '../constant'
+import constant from '../constant'
 import { MGame, MMatch, MPlayer, MRoom, MUser } from '../models';
 import GameLogics from '../games'
 import { gameService } from '../services/GameService';
 import { pick } from 'lodash';
-import jwt from 'jsonwebtoken'
 import config from '../config';
 import { TicketTool } from '../utils';
 import _ from 'lodash';
@@ -101,7 +100,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       return callback(false);
     }
     try {
-      const match_id = await roomService.startGame(room_id, data.player_id);
+      const match_id = await roomService.startGame(room_id);
       if (!match_id) {
         return callback(false);
       }
@@ -110,7 +109,6 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       io.to(`room:${room_id}`).emit('room:game-start', {
         room_id,
         match_id,
-        curr_turn: data.player_id,
         timestamp: Date.now()
       });
     } catch (error) {
@@ -232,8 +230,13 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     }
 
     try {
-      const { success, roomReady } = await roomService.playerReady(room_id, ready, data.player_id);
+      const room = await MRoom.findById(room_id).lean(true);
+      if (!room || room.status === constant.ROOM.STATUS.playing) {
+        return callback(false);
+      }
+      const success = await roomService.playerReady(room, ready, data.player_id);
       callback(success);
+      const roomReady = await roomService.roomReady(room)
       if (success) {
         io.to(`room:${room_id}`).emit('room:room-ready', roomReady)
         console.log(`🏠 房间 ${room_id} ${roomReady ? "已就绪" : "未就绪"}`);
@@ -305,7 +308,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    */
   async function surrender(data: { room_id: string; match_id: string, player_id: string }, callback: (success: boolean) => void) {
     const room = await roomService.getRoomById(data.room_id);
-    if (!room || room.status !== RoomStatus.playing) {
+    if (!room || room.status !== constant.ROOM.STATUS.playing) {
       callback(false);
       return;
     }
@@ -317,7 +320,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     try {
       callback(true);
       console.log(`🏡 ${room._id} 👤 玩家 ${player._id} 认输`);
-      const winner_id = room.members.filter(m => !m.watch_id).map(m => m._id).find(_id => _id !== data.player_id)
+      const winner_id = room.members.filter(m => m.member_type === constant.MEMBER.TYPE.player).map(m => m._id).find(_id => _id !== data.player_id)
       await roomService.gameover(data.room_id, data.match_id, winner_id as string)
       const winner = await MPlayer.findById(winner_id).lean(true)
       io.to(`room:${data.room_id}`).emit('room:game-over', pick(winner, ['_id', 'nickname']))

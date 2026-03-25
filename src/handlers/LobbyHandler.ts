@@ -8,9 +8,9 @@ import { roomService } from '../services/RoomService';
 import { playerService } from '../services/PlayerService';
 import type { AuthSocket } from '../middleware/auth';
 import { userService } from '../services/UserService';
-import { IPlayer, CB, IMember } from '../types';
+import { CB } from '../types';
 import { MPlayer, MRoom } from '../models';
-import constant from '../constant';
+import constant, { MemberType } from '../constant';
 
 export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: string) {
   const isLoggedIn = socket.isLoggedIn;
@@ -92,7 +92,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       cb(false, undefined, '创建房间失败');
     }
   }
-  async function joinRoom(data: { room_id: string; watch_id: string, password?: string }, cb: CB) {
+  async function joinRoom(data: { room_id: string; type: MemberType, password?: string }, cb: CB) {
     if (!cb) {
       return;
     }
@@ -102,12 +102,15 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
     }
 
     const room = await MRoom.findById(data.room_id).lean(true);
-    const player = await MPlayer.findOne({ user_id, game_id: room?.game_id }).lean(true);
+    if (!room) {
+      return cb(false, '房间不存在')
+    }
+    const player = await MPlayer.findOne({ user_id, game_id: room.game_id }).lean(true);
     if (!player) {
       return cb(false, '玩家不存在')
     }
     try {
-      const result = await roomService.joinRoom(data.room_id, data.watch_id, player, data.password);
+      const result = await roomService.joinRoom(data, player);
       if (!result.success) {
         cb(false, '加入房间失败');
         return;

@@ -1,19 +1,18 @@
-import assert from "node:assert";
-import constant, { PlayerType } from "../../constant";
-import { MMatch, MPlayer } from "../../models";
+import constant from "../../constant";
+import { MMatch } from "../../models";
 import { IMatch, IMember, IPlayer, IRoom } from "../../types";
 import { cloneDeep } from "lodash";
 
 export default class Gomoku {
-  static getInitState(player_id: string) {
+  static getInitState() {
     return {
-      curr_turn: player_id,
+      curr_turn: '',
       players: [],
       board: {} // { [key:string]: string}
     }
   }
   static assignRole(room: IRoom, player: IMember) {
-    player.role = room.members.filter(m => !m.watch_id).length === 0 ? 'black' : 'white'
+    player.role = room.members.filter(m => m.member_type === constant.MEMBER.TYPE.player).length === 0 ? 'black' : 'white'
   }
   static assignRoles(players: IPlayer[]) {
     return players.map((p, idx) => ({ _id: p._id, role: idx === 0 ? 'black' : 'white', score: 0, is_winner: false }));

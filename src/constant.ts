@@ -45,6 +45,10 @@ export enum PlayerType {
   player = 'player',
   robot = 'robot',
 }
+export enum MemberType {
+  player = 'player',
+  viewer = 'viewer',
+}
 export enum MatchStatus {
   waiting = 'waiting',
   playing = 'playing',
@@ -72,6 +76,9 @@ const constant = {
   PLAYER: {
     STATE: PlayerState,
     TYPE: PlayerType,
+  },
+  MEMBER: {
+    TYPE: MemberType,
   },
 };
 
