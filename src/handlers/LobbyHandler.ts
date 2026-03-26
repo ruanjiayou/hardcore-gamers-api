@@ -41,6 +41,11 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       const room = await MRoom.findById(player.room_id).lean(true);
       const member = room?.members.find(m => m._id === player._id);
       cb({ ...player, ...member })
+      const room_key = `room:${player.room_id}`
+      if (!socket.rooms.has(room_key)) {
+        socket.join(room_key);
+        io.to(room_key).emit('room:player-rejoined', player)
+      }
     } else {
       cb(player);
     }

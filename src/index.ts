@@ -68,6 +68,7 @@ io.use((socket, next) => {
   authMiddleware(socket as AuthSocket, next);
 });
 
+const usersMap = new Map<string, string>();
 /**
  * Socket.io 连接处理
  */
@@ -75,21 +76,29 @@ io.on('connection', async (socket: AuthSocket) => {
   const user_id = socket.user_id!;
 
   console.log(`\n✅ 用户连接: ${user_id} (${socket.id})`);
-
+  const socket_id = usersMap.get(user_id);
+  if (socket_id) {
+    const oldSocket = io.sockets.sockets.get(socket_id);
+    if (oldSocket) {
+      oldSocket.emit('user:kicked', { message: '您在另一个设备登录' })
+      oldSocket.disconnect(true)
+    }
+  }
   // 更新玩家状态为在线 ❌ 应该是用户服务
   // playerService.updatePlayerStatus(user_id, 'online');
 
   // 加入玩家专属的 Socket.io 房间
-  socket.join(user_id);
+  socket.join(`user:${user_id}`);
 
   // 不能异步,不然获取用户信息超时
   const key = config.prefix + 'stats:users'
   redis.del(key);
   // 广播用户上线
   if (socket.room_id) {
-    io.to(`room:${socket.room_id}`).emit('room:player-network', { player_id: socket.player_id, online: true, timestamp: Date.now() });
+    io.to(`room:${socket.room_id}`).emit('player:change', { player_id: socket.player_id, online: true, timestamp: Date.now() });
+    // TODO: notify friends
   }
-  io.emit('lobby:user-network', { user_id, online: true, timestamp: Date.now() });
+  io.emit('user:change', { user_id, atline: true, timestamp: Date.now() });
 
   // 注册事件处理器
   setupLobbyHandlers(io, socket, user_id);
@@ -117,9 +126,10 @@ io.on('connection', async (socket: AuthSocket) => {
     await userService.getStats()
     // 广播玩家离线
     if (socket.room_id) {
-      io.to(`room:${socket.room_id}`).emit('room:player-network', { player_id: socket.player_id, online: false, timestamp: Date.now() });
+      io.to(`room:${socket.room_id}`).emit('player:change', { player_id: socket.player_id, online: false, timestamp: Date.now() });
+      // TODO: notify friends
     }
-    io.emit('lobby:user-network', { user_id, online: false, timestamp: Date.now() });
+    io.emit('user:change', { user_id, atline: false, timestamp: Date.now() });
 
 
     console.log(`❌ 用户断开: ${user_id} (${socket.id})\n`);

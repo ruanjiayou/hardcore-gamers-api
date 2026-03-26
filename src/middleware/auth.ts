@@ -67,8 +67,7 @@ export async function authMiddleware(socket: AuthSocket, next: (err?: Error) => 
     return next(new Error('验证失败'))
   }
   socket.user_id = user_id;
-  socket.redis = redis
-  socket.join(`user:${user_id}`)
+  socket.redis = redis;
 
   console.log(`🔐 用户认证成功: ${user.name} (${user._id}) | 状态: ${socket.isGuest ? '游客' : '登陆'}`);
 
