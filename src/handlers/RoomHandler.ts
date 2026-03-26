@@ -237,11 +237,9 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       const success = await roomService.playerReady(room, ready, data.player_id);
       callback(success);
       const roomReady = await roomService.roomReady(room)
-      if (success) {
+      if (roomReady) {
         io.to(`room:${room_id}`).emit('room:room-ready', roomReady)
         console.log(`🏠 房间 ${room_id} ${roomReady ? "已就绪" : "未就绪"}`);
-      }
-      if (roomReady) {
         startGame(data, () => {
           console.log('自动开始')
         });

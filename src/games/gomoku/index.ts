@@ -7,6 +7,7 @@ export default class Gomoku {
   static getInitState() {
     return {
       curr_turn: '',
+      first: 'black',
       players: [],
       board: {} // { [key:string]: string}
     }

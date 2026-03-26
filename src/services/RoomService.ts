@@ -207,13 +207,14 @@ export class RoomService {
     }
     const state = GameLogics[game.slug].getInitState();
     const match_id = v7();
+    const curr_turn = players.find(p => p.role === state.first)?._id || '';
     await MMatch.create({
       _id: match_id,
       game_id: room.game_id,
       room_id: room._id,
       status: constant.MATCH.STATUS.playing,
-      init_state: { ...state },
-      curr_state: { ...state },
+      init_state: { ...state, players },
+      curr_state: { ...state, players, curr_turn },
       players: GameLogics[game.slug]?.assignRoles(players),
       createdAt: new Date(),
       updatedAt: new Date(),
