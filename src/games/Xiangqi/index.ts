@@ -1,12 +1,14 @@
 import constant from "../../constant";
-import { MMatch, MPlayer } from "../../models";
+import { MMatch } from "../../models";
 import { IMatch, IMember, IPlayer, IRoom } from "../../types";
 import { cloneDeep } from "lodash";
+import { isLegalMove, hasAnyLegalMove } from "./rules";
 
 export default class Xiangqi {
   static getInitState(player_id: string) {
     return {
       curr_turn: player_id,
+      first: 'red',
       board: [
         [
           { "type": "r", "color": "black" },
@@ -76,20 +78,38 @@ export default class Xiangqi {
     const next = match.players.find(p => p._id !== movement.player_id);
 
     const { player_id, from, to } = movement;
-    let gameover = false;
-    // 需要深克隆,不然修改位置部分失败
     const curr_state = cloneDeep(match.curr_state);
-    if (curr_state.board[to[0]][to[1]]?.type === 'k') {
-      gameover = true;
+
+    // 权威校验：必须轮到该玩家、角色匹配、且走法合法（防止抢走/非法着法污染对局状态）
+    const player = match.players.find(p => p._id === player_id);
+    if (!player || curr_state.curr_turn !== player_id) {
+      return { success: false, gameover: false, data: null };
     }
+    if (!isLegalMove(curr_state.board, from, to)) {
+      return { success: false, gameover: false, data: null };
+    }
+
+    // 权威胜负判定，覆盖三种结束方式：
+    //  1) 吃掉对方将/帅（目标格原本是 k）；
+    //  2) 将死：走完后对方被将军且无任何合法应对；
+    //  3) 困毙：走完后对方未被将军但也无子可走。
+    // 后两种通过"对方是否还有任意合法走法"统一判定——无着可走即负，落子方获胜。
+    let gameover = false;
+    const capturedKing = curr_state.board[to[0]][to[1]]?.type === 'k';
     curr_state.board[to[0]][to[1]] = curr_state.board[from[0]][from[1]];
     curr_state.board[from[0]][from[1]] = null;
+    if (capturedKing) {
+      gameover = true;
+    } else if (next) {
+      const opponentColor = next.role === 'red' ? 'red' : 'black';
+      gameover = !hasAnyLegalMove(curr_state.board, opponentColor);
+    }
     curr_state.curr_turn = next?._id;
-    const diff: any = { $set: { curr_state, updatedAt: new Date() }, $push: { movements: { ...movement, timestamp: Date.now() } } }
-    if (gameover) {
-      diff.$set.status = 'finished';
-      diff.$set.players = match.players.map(p => ({ ...p, score: p._id === player_id ? 1 : 0 }))
-      await Promise.all(match.players.map(p => MPlayer.updateOne({ _id: p._id }, { $inc: { score: 1, 'stats.games': 1, winnings: p._id === player_id ? 1 : 0 } })))
+    // 只负责落子；对局结束的结算统一交给 RoomService.gameover（带幂等保护），
+    // 避免此处直接写 MPlayer/MMatch 造成重复加分与状态不一致。
+    const diff: any = {
+      $set: { curr_state, updatedAt: new Date() },
+      $push: { movements: { ...movement, timestamp: Date.now() } }
     }
     await MMatch.updateOne({ _id: match._id }, diff);
 

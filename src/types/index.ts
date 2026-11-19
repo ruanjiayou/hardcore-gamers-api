@@ -16,6 +16,8 @@ export interface IGame {
   title: string;
   desc: string;
   numbers: { min: number, max: number };
+  /** 游戏主页形态：solo=单人直接开局（无需房间）；room=房间制（棋类/组队） */
+  mode: 'solo' | 'room';
   genre: GameGenre;
   icon: string;
   status: number;
@@ -41,6 +43,12 @@ export interface IRoom {
   numbers: { min: number, max: number };
   isPrivate: boolean;
   password?: string;  // 新增：房间密码
+  /** 官方公共房（种子预建）：任何人只能退出，不可解散 */
+  official?: boolean;
+  /** 是否允许观战（房主可在开局前切换） */
+  allowSpectate?: boolean;
+  /** 单人快开的临时房：不进房间列表/计数，离开即销毁 */
+  transient?: boolean;
   createdAt: Date;
   updatedAt: Date;
   startedAt?: Date;

@@ -15,6 +15,8 @@ export const MGame = mongoose.model<IGame>('games', new mongoose.Schema({
   genre: String,
   icon: String,
   status: Number,
+  // solo=单人直接开局（无房间）；room=房间制（棋类/组队）
+  mode: { type: String, default: 'room' },
   numbers: { min: Number, max: Number },
   role_config: {
     mode: String, // fixed/team/custom
@@ -42,6 +44,12 @@ export const MRoom = mongoose.model<IRoom>('rooms', new mongoose.Schema({
   numbers: { min: Number, max: Number },
   isPrivate: Boolean,
   password: String,
+  // 官方公共房（种子预建，不可解散，只能退出）
+  official: { type: Boolean, default: false },
+  // 是否允许观战（房主开局前可切换）
+  allowSpectate: { type: Boolean, default: true },
+  // 单人快开临时房：不进列表/计数，离开即销毁
+  transient: { type: Boolean, default: false },
   startedAt: Date,
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },

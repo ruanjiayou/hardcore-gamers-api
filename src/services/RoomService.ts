@@ -10,8 +10,15 @@ import redis from '../utils/redis'
 import config from '../config';
 import constant, { MemberType, PlayerType } from '../constant'
 import GameLogics from '../games'
+import { normalizeTimeControl, buildMatchTimeControl } from '../utils/timeControl'
+import { canSpectate, resolveLeaveAction } from '../utils/roomPolicy'
 
 export class RoomService {
+
+  /** 房间数变化后失效统计缓存，避免解散/创建后"活跃房间"6 小时内一直显示旧值 */
+  private async invalidateStats() {
+    await redis.del(config.prefix + 'stats:room').catch(() => { /* 缓存失效失败不影响主流程 */ });
+  }
 
   /**
    * 创建房间 - 支持密码
@@ -23,9 +30,42 @@ export class RoomService {
     data.updatedAt = new Date();
 
     await MRoom.create(data);
+    await this.invalidateStats();
 
     console.log(`✨ 房间创建: ${data._id} (${data.name}) ${data.isPrivate ? '🔒 私密' : '🔓 公开'}`);
     return data;
+  }
+
+  /**
+   * 创建房间并让房主作为第一个玩家入房。
+   * 保证 rooms.members 与 players.state/room_id 在同一次操作里一致，
+   * 否则房主不在成员列表、state 停在 online，前端既不显示"准备"也无法开始游戏。
+   */
+  async createRoomWithOwner(data: Partial<IRoom>, owner: IPlayer): Promise<IRoom> {
+    const room = await this.createRoom(data);
+
+    const member: IMember = {
+      _id: owner._id,
+      player_type: owner.type as PlayerType,
+      member_type: constant.MEMBER.TYPE.player,
+      role: '',
+      team: '',
+    };
+    const game = await MGame.findById(room.game_id).lean(true);
+    if (game) {
+      GameLogics[game.slug]?.assignRole(room, member);
+    }
+
+    await MRoom.updateOne({ _id: room._id }, { $set: { members: [member] } });
+    // 房主进房即视为已准备：房间内所有真人玩家统一自动准备，开局完全由房主点"开始游戏"控制。
+    await MPlayer.updateOne({ _id: owner._id }, {
+      $set: {
+        room_id: room._id,
+        state: constant.PLAYER.STATE.prepared,
+      },
+    });
+
+    return { ...room, members: [member] };
   }
 
   /**
@@ -38,17 +78,26 @@ export class RoomService {
 
   /**
    * 获取游戏的所有房间
+   * 口径与 GameService.getAllGames 的房间计数一致：返回未解散（非 deleted）且非临时（单人快开）的房间，
+   * 含 waiting / playing——进行中的房间前端显示"加入"禁用、可"观看"，避免数量与列表不一致。
    */
   async getRoomsByGameId(game_id: string): Promise<IRoom[]> {
-    const rooms = await MRoom.find({ game_id, status: constant.ROOM.STATUS.waiting }).lean(true);
+    const rooms = await MRoom.find({
+      game_id,
+      status: { $ne: constant.ROOM.STATUS.deleted },
+      transient: { $ne: true },
+    }).lean(true);
     return rooms;
   }
 
   /**
-   * 获取所有房间
+   * 获取所有房间（不含临时房）
    */
   async getAllRooms(): Promise<IRoom[]> {
-    const rooms = await MRoom.find({ status: 1 }).lean(true);
+    const rooms = await MRoom.find({
+      status: { $ne: constant.ROOM.STATUS.deleted },
+      transient: { $ne: true },
+    }).lean(true);
     return rooms;
   }
 
@@ -66,89 +115,143 @@ export class RoomService {
 
   /**
    * 玩家加入房间 - 支持密码验证
+   * - 临时房（单人快开）不对外人开放（已在房内的成员重连除外）
+   * - 观战需房间 allowSpectate 未关闭
    */
-  async joinRoom(data: { room_id: string, type: MemberType, password?: string }, player: IPlayer): Promise<{ success: boolean, newPlayer?: IMember }> {
+  async joinRoom(data: { room_id: string, type: MemberType, password?: string }, player: IPlayer): Promise<{ success: boolean, newPlayer?: IMember, reason?: string }> {
     const room = await MRoom.findById(data.room_id).lean(true);
-    if (!room) return { success: false };
+    if (!room) return { success: false, reason: '房间不存在' };
     const game = await MGame.findById(room.game_id).lean(true)
-    if (!game) return { success: false };
+    if (!game) return { success: false, reason: '游戏不存在' };
 
-    // 检查玩家是否已在房间中
-    if (room.members.some(p => p._id === player._id)) {
-      return { success: true };
+    // 检查玩家是否已在房间中（幂等：返回现有 member，并补偿同步 MPlayer 状态）
+    const existing = room.members.find(p => p._id === player._id);
+    if (existing) {
+      // 观战者 watching，其余玩家进房即 prepared（与 createRoomWithOwner 对齐）。
+      await MPlayer.updateOne({ _id: player._id }, {
+        $set: {
+          room_id: data.room_id,
+          state: data.type === constant.MEMBER.TYPE.viewer
+            ? constant.PLAYER.STATE.watching
+            : constant.PLAYER.STATE.prepared,
+        }
+      });
+      return { success: true, newPlayer: existing };
+    }
+    // 临时房（单人快开）不进列表也不对外人开放
+    if (room.transient) {
+      console.log(`❌ 临时房间不可加入: ${data.room_id}`);
+      return { success: false, reason: '该房间不可加入' };
+    }
+    // 观战开关：allowSpectate === false 时禁止以观战身份进入
+    if (data.type === constant.MEMBER.TYPE.viewer && !canSpectate(room)) {
+      console.log(`❌ 房间禁止观战: ${data.room_id}`);
+      return { success: false, reason: '该房间不允许观战' };
     }
     const players = room.members.filter(m => m.member_type === constant.MEMBER.TYPE.player);
     if (data.type === constant.MEMBER.TYPE.player) {
       // 检查房间是否已满
       if (players.length >= room.numbers.max) {
         console.log(`❌ 房间已满: ${data.room_id}`);
-        return { success: false };
+        return { success: false, reason: '房间已满' };
       }
 
       // 检查房间状态
       if (room.status !== constant.ROOM.STATUS.waiting) {
         console.log(`❌ 房间游戏已开始: ${data.room_id}`);
-        return { success: false };
+        return { success: false, reason: '房间游戏已开始' };
       }
 
     }
-    // 验证密码
-    if (room.isPrivate && !this.verifyPassword(data.room_id, data.password || '')) {
+    // 验证密码（verifyPassword 是异步方法，必须 await，否则 !Promise 恒为 false 导致密码校验被绕过）
+    if (room.isPrivate && !(await this.verifyPassword(data.room_id, data.password || ''))) {
       console.log(`❌ 房间密码错误: ${data.room_id}`);
-      return { success: false };
+      return { success: false, reason: '房间密码错误' };
     }
     const newPlayer = { _id: player._id, player_type: player.type as PlayerType, member_type: data.type, role: '', team: '' }
     GameLogics[game.slug].assignRole(room, newPlayer)
     const diff = { owner_id: room.owner_id, members: cloneDeep(room.members) }
-    if (room.members.length === 0) {
+    // 空房由第一位对战玩家接任房主（官方房的"桌长"）；观战者不占房主位
+    if (room.members.length === 0 && data.type === constant.MEMBER.TYPE.player) {
       diff.owner_id = player._id;
     }
     diff.members.push(newPlayer)
+    // 单一写入入口：房间成员与玩家状态在同一次请求内一起落库，
+    // 避免"匹配/机器人"等旁路路径只改 Room 不改 Player 造成的状态漂移。
     await MRoom.updateOne({ _id: room._id }, { $set: diff })
+    // 真人玩家进房自动准备；观战者不计入准备，状态为 watching。
+    await MPlayer.updateOne({ _id: player._id }, {
+      $set: {
+        room_id: data.room_id,
+        state: data.type === constant.MEMBER.TYPE.viewer
+          ? constant.PLAYER.STATE.watching
+          : constant.PLAYER.STATE.prepared,
+      }
+    })
     console.log(`👤 玩家 ${player._id} 加入房间 ${data.room_id}，当前人数: ${diff.members.length}`);
     return { success: true, newPlayer };
   }
 
   /**
-   * 玩家离开房间
+   * 玩家离开房间。流转规则见 utils/roomPolicy.resolveLeaveAction：
+   * - 单人快开房（transient）：随时可离开，离开即销毁。
+   * - 游戏进行中（playing）禁止离开（临时房除外），需认输/等对局结束。
+   * - 自建房：房主离开即解散。
+   * - 官方房：只退出不解散；房主离开转让房主，空房重置保留（空桌复用）。
+   * - 普通成员离开：仅移除自己；房间内已无真人时一并回收机器人。
    */
-  async leaveRoom(room_id: string, player_id: string): Promise<IMember | undefined> {
+  async leaveRoom(room_id: string, player_id: string): Promise<{ ok: boolean, dissolved?: boolean, reason?: string }> {
     const room = await MRoom.findById(room_id).lean(true);
-    if (!room) return;
-    const member = room.members.find(m => m._id === player_id);
-    if (!member) return;
-    let owner_id = room.owner_id;
-    if (player_id === owner_id) {
-      // 不是观战的玩家称为房主
-      const next = room.members.find(m => m.member_type === constant.MEMBER.TYPE.player);
-      owner_id = next ? next._id : '';
-    }
-    // 没有玩家,移除所有机器人
-    const player_idx = room.members.findIndex(m => m._id !== player_id && m.member_type === constant.MEMBER.TYPE.viewer);
+    if (!room) return { ok: false, reason: '房间不存在' };
 
-    await MRoom.updateOne({ _id: room._id }, { $set: { owner_id, members: room.members.filter(m => !(m._id === player_id || (player_idx === -1 && constant.PLAYER.TYPE.robot === m.player_type))) } })
+    const decision = resolveLeaveAction(room, player_id);
+    if (decision.action === 'blocked') {
+      return { ok: false, reason: decision.reason };
+    }
+
+    // 离开即销毁（临时房 / 自建房房主离开）
+    if (decision.action === 'destroy') {
+      await this.destroyRoom(room_id);
+      return { ok: true, dissolved: true };
+    }
+
+    // 仅退出：reset 表示离开后房间内已无真人 → 清空成员并回收机器人
+    const remainMembers = decision.reset
+      ? room.members.filter(m => m._id !== player_id && m.player_type !== constant.PLAYER.TYPE.robot)
+      : room.members.filter(m => m._id !== player_id);
+    const set: Partial<IRoom> & { updatedAt: Date } = { members: remainMembers, updatedAt: new Date() };
+    if (decision.transferOwnerTo !== undefined) {
+      set.owner_id = decision.transferOwnerTo;
+    }
+    if (decision.reset) {
+      // 空房回等待态；官方空桌重置房主，等待下一位玩家接任
+      set.status = constant.ROOM.STATUS.waiting;
+      set.match_id = '';
+      if (room.official) set.owner_id = '';
+    }
+    await MRoom.updateOne({ _id: room._id }, { $set: set })
     await MPlayer.updateOne({ _id: player_id }, { $set: { room_id: '', state: constant.PLAYER.STATE.online } })
-    console.log(`👤 玩家 ${player_id} 离开房间 ${room_id}，当前人数: ${room.members.length - 1}`);
+    console.log(`👤 玩家 ${player_id} 离开房间 ${room_id}，当前人数: ${remainMembers.length}${decision.reset ? '（空房重置）' : ''}`);
 
-    if (player_idx === -1) {
-      room.members.filter(m => m.player_type === constant.PLAYER.TYPE.robot).forEach(m => {
-        fetch(`${config.robot_url}/rem-robot`, {
-          method: 'post',
-          headers: new Headers({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({
-            player_id: m._id,
-          }),
-        }).then(async (resp) => {
-          const body = await resp.json()
-          console.log(body)
-        }).catch(err => {
-          console.log(err);
-        });
-
-      })
+    if (decision.reset) {
+      const robotIds = room.members.filter(m => m.player_type === constant.PLAYER.TYPE.robot).map(m => m._id);
+      if (robotIds.length) {
+        // 复位机器人状态，使其可被其他房间重新占用
+        await MPlayer.updateMany(
+          { _id: { $in: robotIds } },
+          { $set: { room_id: '', state: constant.PLAYER.STATE.online } }
+        );
+        await Promise.allSettled(robotIds.map(id =>
+          fetch(`${config.robot_url}/rem-robot`, {
+            method: 'post',
+            headers: new Headers({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ player_id: id }),
+          })
+        ));
+      }
     }
 
-    return member;
+    return { ok: true, dissolved: false };
   }
 
   async kickPlayer(room_id: string, player_id: string) {
@@ -201,21 +304,30 @@ export class RoomService {
     if (players.length < room.numbers.min) {
       return '';
     }
-
-    if (players.length < room.numbers.min) {
-      return '';
-    }
     const state = GameLogics[game.slug].getInitState();
+    // 象棋 getInitState 不返回 first，默认由 role=red 的玩家先手。
+    const firstRole = state.first || 'red';
     const match_id = v7();
-    const curr_turn = players.find(p => p.role === state.first)?._id || '';
+    const curr_turn = players.find(p => p.role === firstRole)?._id
+      || players.find(p => p.role === 'black' || p.role === 'white')?._id
+      || players[0]?._id || '';
+
+    // 象棋计时：开局时把房间配置固化为对局快照（读秒制：每步限时，超时扣总额度）。
+    // 仅对配置了 timeControl.enabled 的房间生效；快照写入对局状态，后续不再依赖房间设置。
+    const assigned = GameLogics[game.slug]?.assignRoles(players);
+    const config = normalizeTimeControl(room.settings?.timeControl);
+    const timeControl = config.enabled
+      ? buildMatchTimeControl(config, players.map(p => p._id), Date.now())
+      : undefined;
+
     await MMatch.create({
       _id: match_id,
       game_id: room.game_id,
       room_id: room._id,
       status: constant.MATCH.STATUS.playing,
-      init_state: { ...state, players },
-      curr_state: { ...state, players, curr_turn },
-      players: GameLogics[game.slug]?.assignRoles(players),
+      init_state: { ...state, players, ...(timeControl ? { timeControl } : {}) },
+      curr_state: { ...state, players, curr_turn, ...(timeControl ? { timeControl } : {}) },
+      players: assigned,
       createdAt: new Date(),
       updatedAt: new Date(),
       stats: {},
@@ -243,57 +355,150 @@ export class RoomService {
     return match_id;
   }
 
-  async gameover(room_id: string, match_id: string, winner_player_id: string) {
+  /**
+   * 单人游戏实时记录最高分（不结算、不改对局状态）。
+   * 用 $max 写入 MPlayer.score：排行榜展示的是"该游戏历史最高分"，
+   * 中途退出也不会丢分，且重复上报幂等。
+   */
+  async recordSoloScore(player_id: string, score: number): Promise<boolean> {
+    if (!Number.isFinite(score) || score < 0) return false;
+    const res = await MPlayer.updateOne(
+      { _id: player_id },
+      { $max: { score: Math.floor(score) } }
+    );
+    return res.modifiedCount > 0; // true 表示刷新了历史最高分
+  }
+
+  /**
+   * 对局结算（幂等）。
+   * @param winner_player_id 胜者 player_id；'' 表示平局（对战游戏）。单人游戏可传自己。
+   * @param scores 可选：显式分数表 { player_id: score }。用于单人游戏上报本局得分 /
+   *               斗地主队伍计分。提供时以此为准写入 MMatch/MPlayer.score，
+   *               不再使用 ±1。
+   * @param scoreMode 'inc'（默认，累加到 MPlayer.score）| 'max'（取历史最高分，
+   *                  用于单人游戏，保证排行榜展示最佳成绩且实时上报不重复累加）。
+   */
+  async gameover(
+    room_id: string,
+    match_id: string,
+    winner_player_id: string,
+    scores?: Record<string, number>,
+    scoreMode: 'inc' | 'max' = 'inc'
+  ) {
     const room = await MRoom.findOne({ _id: room_id }, { members: 1 }).lean(true);
     if (!room) {
       return;
     }
-    await MRoom.updateOne(
-      {
-        _id: room_id
-      },
+    const match = await MMatch.findOne({ _id: match_id }).lean(true);
+    if (!match) {
+      return;
+    }
+
+    // 幂等保护：只有把对局从 playing 原子地改成 gameover 成功的这一次调用才做结算。
+    // 避免 game 逻辑层（如象棋吃将）与服务层重复加分、重复改状态。
+    if (match.status === constant.MATCH.STATUS.gameover) {
+      return;
+    }
+    // 有显式分数表时用之；否则沿用对战游戏的 ±1/平局 0 语义。
+    const scoreOf = (pid: string) => scores
+      ? (scores[pid] ?? 0)
+      : (winner_player_id ? (pid === winner_player_id ? 1 : -1) : 0);
+    const claim = await MMatch.updateOne(
+      { _id: match._id, status: constant.MATCH.STATUS.playing },
       {
         $set: {
-          status: 'waiting',
+          status: constant.MATCH.STATUS.gameover,
+          updatedAt: new Date(),
+          players: match.players.map(p => ({ ...p, score: scoreOf(p._id) })),
+          ...(scores ? { 'stats.scores': scores } : {}),
+        }
+      }
+    );
+    if (!claim.modifiedCount) {
+      return;
+    }
+
+    // 房间回到等待；所有真人玩家与机器人统一回到 prepared（观战者保持 watching）。
+    // 开局由房主点"开始游戏"控制，对局结束后直接处于已准备状态，便于再次开局。
+    await MRoom.updateOne(
+      { _id: room_id },
+      {
+        $set: {
+          status: constant.ROOM.STATUS.waiting,
           match_id: '',
           updatedAt: new Date(),
         }
       });
-    const match = await MMatch.findOne({ _id: match_id }).lean(true);
-    if (match) {
-      await MMatch.updateOne(
-        { _id: match._id },
-        {
-          $set: {
-            status: constant.MATCH.STATUS.gameover,
-            updatedAt: new Date(),
-            players: match.players.map(p => ({ ...p, score: p._id === winner_player_id ? 1 : -1 })),
-          }
-        });
-      await MPlayer.bulkWrite(room.members.filter(m => m.member_type === constant.MEMBER.TYPE.player).map(p => ({
+    await MPlayer.bulkWrite(room.members.map(m => {
+      const isPlayer = m.member_type === MemberType.player;
+      // 单人游戏（scoreMode='max'）：score 取历史最高分，与其他对局累加语义区分开。
+      const useMax = isPlayer && !!scores && scoreMode === 'max';
+      return {
         updateOne: {
-          filter: { _id: p._id },
+          filter: { _id: m._id },
           update: {
-            state: p.player_type === constant.PLAYER.TYPE.robot ? constant.PLAYER.STATE.prepared : constant.PLAYER.STATE.inroom,
+            $set: {
+              state: m.member_type === MemberType.viewer
+                ? constant.PLAYER.STATE.watching
+                : constant.PLAYER.STATE.prepared,
+            },
+            // $set 与 $inc 必须分层，混用会触发 MongoServerError: Unknown modifier
             $inc: {
-              'stats.games': 1,
-              'stats.matches': 1,
-              score: p._id === winner_player_id ? 1 : -1,
-              'stats.winners': p._id === winner_player_id ? 1 : 0,
-            }
+              ...(isPlayer ? {
+                'stats.games': 1,
+                'stats.matches': 1,
+                // 平局（winner 为空且无显式分数）不再扣分——修复原有不一致：
+                // MMatch.players[].score 写 0 而 MPlayer.score 却 -1。
+                ...(useMax ? {} : { score: scoreOf(m._id) }),
+                'stats.winners': scores
+                  ? 0
+                  : (winner_player_id && m._id === winner_player_id ? 1 : 0),
+              } : {}),
+            },
+            ...(useMax ? { $max: { score: Math.floor(scoreOf(m._id)) } } : {}),
           },
-        }
-      })));
-    }
+        },
+      };
+    }));
   }
 
   /**
-   * 销毁房间
+   * 销毁房间。官方公共房不允许销毁（只能退出，空桌保留复用）。
    */
   async destroyRoom(room_id: string) {
     const room = await MRoom.findById(room_id).lean(true);
     if (!room) return;
+    if (room.official) {
+      // 兜底保护：官方房即使被误调用也不销毁
+      console.log(`⚠️  官方房间不可解散，已忽略: ${room_id}`);
+      return;
+    }
     await MRoom.updateOne({ _id: room_id }, { $set: { status: constant.ROOM.STATUS.deleted } });
+    await this.invalidateStats();
+    if (room.members?.length) {
+      const memberIds = room.members.map(m => m._id);
+      // 释放房间内所有真人玩家，避免其 room_id 悬空导致刷新后无法回房/无法进入新房间
+      await MPlayer.updateMany(
+        { _id: { $in: memberIds }, type: constant.PLAYER.TYPE.player },
+        { $set: { room_id: '', state: constant.PLAYER.STATE.online } }
+      );
+      // 回收机器人：复位为 online 并清空 room_id，否则两个机器人用一次后永远无法再被 addRobot 选中
+      const robotIds = room.members.filter(m => m.player_type === constant.PLAYER.TYPE.robot).map(m => m._id);
+      if (robotIds.length) {
+        await MPlayer.updateMany(
+          { _id: { $in: robotIds } },
+          { $set: { room_id: '', state: constant.PLAYER.STATE.online } }
+        );
+        // 通知 robot 服务移除 bot 实例
+        await Promise.allSettled(robotIds.map(id =>
+          fetch(`${config.robot_url}/rem-robot`, {
+            method: 'post',
+            headers: new Headers({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ player_id: id }),
+          })
+        ));
+      }
+    }
     console.log(`🗑️  房间解散: ${room_id}`);
     return room;
   }
@@ -303,15 +508,16 @@ export class RoomService {
     await MPlayer.updateOne({ _id: player_id }, { $set: { state: ready ? constant.PLAYER.STATE.prepared : constant.PLAYER.STATE.inroom } });
     return true;
   }
+  /**
+   * 房间是否已可开局（所有真人玩家都已 prepared 且达到人数下限）。
+   * 仅用于前端展示"已就绪"，不修改房间状态、更不触发开局——
+   * 开局一律由房主显式点"开始游戏"控制（避免自动化导致房主来不及操作）。
+   */
   async roomReady(room: IRoom) {
     const ids = room.members.filter(m => m.member_type === constant.MEMBER.TYPE.player).map(m => m._id);
     const players = await MPlayer.find({ _id: { $in: ids } }, { state: 1 }).lean(true)
     const readys = sumBy(players, p => p.state === constant.PLAYER.STATE.prepared ? 1 : 0);
-    const roomReady = readys === players.length && readys >= room.numbers.min
-    if (roomReady) {
-      await MRoom.updateOne({ _id: room._id, }, { $set: { status: constant.ROOM.STATUS.readied } })
-    }
-    return roomReady;
+    return readys === players.length && readys >= room.numbers.min;
   }
 
   /**
@@ -321,11 +527,16 @@ export class RoomService {
     const key = config.prefix + 'stats:room'
     let stats: { [key: string]: string | number } = await redis.hgetall(key)
     if (isEmpty(stats)) {
-      const summary = await MRoom.aggregate([{ $group: { _id: '$status', total: { $sum: 1 } } }]);
-      const waits = summary.find(v => v._id === 'waiting')?.total || 0;
-      const finishedRooms = summary.find(v => v._id === 'finished')?.total || 0;
+      // 排除临时房（单人快开）：它不进房间列表，也不应计入大厅统计
+      const summary = await MRoom.aggregate([
+        { $match: { transient: { $ne: true } } },
+        { $group: { _id: '$status', total: { $sum: 1 } } }]);
+      const waits = summary.find(v => v._id === constant.ROOM.STATUS.waiting)?.total || 0;
+      // 只有 deleted（软删/解散）的房间不算活跃。旧实现减去不存在的 'finished' 状态，
+      // 导致已解散房间仍被计入"活跃房间"。
+      const deletedRooms = summary.find(v => v._id === constant.ROOM.STATUS.deleted)?.total || 0;
       stats = {
-        active: sumBy(summary, 'total') - finishedRooms,
+        active: sumBy(summary, 'total') - deletedRooms,
         waits,
       }
       await redis.pipeline().hmset(key, stats).expire(key, config.expires).exec()

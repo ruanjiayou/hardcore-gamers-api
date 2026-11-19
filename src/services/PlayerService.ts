@@ -65,8 +65,10 @@ export class PlayerService {
   /**
    * 更新玩家状态
    */
-  async updatePlayerStatus(player_id: string, status: string) {
-    await MPlayer.updateOne({ _id: player_id }, { $set: { status } })
+  async updatePlayerStatus(player_id: string, state: string) {
+    // status 是数字（1 normal / 2 muted / 3 banned），在线状态在 state 字段。
+    // 原实现把 'in-lobby' 等字符串写进数字字段会触发 CastError，且写错字段。
+    await MPlayer.updateOne({ _id: player_id }, { $set: { state } })
   }
 
   /**
@@ -111,11 +113,12 @@ export class PlayerService {
     const key = config.prefix + 'stats:players'
     let stats: { [key: string]: string | number } = await redis.hgetall(key)
     if (isEmpty(stats)) {
-      const players = await MPlayer.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
+      // 按 state（字符串枚举）分组，而不是 status（数字封禁状态）
+      const players = await MPlayer.aggregate([{ $group: { _id: '$state', count: { $sum: 1 } } }]);
 
       const total = sumBy(players, 'count');
       const atline = await MPlayer.countDocuments({ atline: true });
-      const playing = sumBy(players, (p) => [PlayerState.ingame, PlayerState.ingame, PlayerState.prepared].includes(p._id) ? p.count : 0);
+      const playing = sumBy(players, (p) => [PlayerState.ingame, PlayerState.prepared, PlayerState.watching].includes(p._id) ? p.count : 0);
 
       stats = {
         total,
