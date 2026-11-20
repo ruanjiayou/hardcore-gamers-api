@@ -5,6 +5,7 @@
 import type { Server } from 'socket.io';
 import { CB } from '../types';
 import { roomService } from '../services/RoomService';
+import { snakeRuntimeService } from '../services/SnakeRuntimeService';
 import type { AuthSocket } from '../middleware/auth';
 import constant from '../constant'
 import { MGame, MMatch, MPlayer, MRoom, MUser } from '../models';
@@ -36,14 +37,47 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
   socket.on('room:get-match-state', getMatchState);
   socket.on('room:player-surrender', surrender);
   socket.on('room:disband', closeRoom)
+  socket.on('room:sync-score', syncScore)
+
+  /**
+   * 点击离开/关闭时同步分数：客户端只带 room_id + player_id（不带分数，防篡改），
+   * 服务端按正在跑的实时对局取分并 $max 写榜。与瞄准/加速上报走不同通道，
+   * 网络慢时也不会因为这条消息没到就丢分 —— leave 与 disconnect 还会各兜一次。
+   */
+  async function syncScore(
+    data: { room_id: string; player_id: string },
+    callback?: (ok: boolean) => void,
+  ) {
+    if (!isLoggedIn || !data?.room_id || !data?.player_id) {
+      callback?.(false);
+      return;
+    }
+    try {
+      // 只认当前登录用户名下的玩家，防止替别人刷榜
+      const own = await MPlayer.exists({ _id: data.player_id, user_id });
+      if (!own) { callback?.(false); return; }
+      const ok = await snakeRuntimeService.syncScoreByRoom(data.room_id, data.player_id);
+      callback?.(ok);
+    } catch (error) {
+      console.log('❌ 同步贪吃蛇分数失败:', error);
+      callback?.(false);
+    }
+  }
 
   async function getRoomDetail(data: { room_id: string }, cb: CB) {
+    // 游客只能浏览大厅，房间详情属于对局内容，需要先登录
+    if (!isLoggedIn) {
+      cb({ room: null, match_id: '' });
+      return;
+    }
     const { room_id } = data;
-    const room = await roomService.getRoomById(room_id);
+    // 自愈：清悬空成员（玩家记录已删 → 玩家列表出现空白名字）、修"playing 但没有对局"的幽灵房。
+    // 不做这一步的话，玩家会进到渲染了画布却永远收不到快照的房间（一直"连接中"）。
+    const room = await roomService.reconcileRoom(room_id);
     let match_id = '';
     if (room) {
-      const members = await MPlayer.find({ _id: { $in: room.members.map(m => m._id) } }).lean(true)
-      room.members = room.members.map(m => {
+      const members = await MPlayer.find({ _id: { $in: room.members.map((m: any) => m._id) } }).lean(true)
+      room.members = room.members.map((m: any) => {
         const player = members.find(p => p._id === m._id)
         return { ...player, ...m }
       });
@@ -51,6 +85,17 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     if (room && room.status === constant.ROOM.STATUS.playing) {
       const match = await MMatch.findOne({ room_id, status: constant.MATCH.STATUS.playing }, { _id: 1 }).lean();
       match_id = match ? match._id : ''
+    }
+    // 贪吃蛇：保证服务端 tick 在跑（重启后按库里局面重建运行时；无尽房回房/刷新时补开局）
+    if (room) {
+      const arena = await roomService.ensureSnakeArena(room_id);
+      if (arena.started) {
+        io.to(`room:${room_id}`).emit('room:game-start', { room_id, match_id: arena.match_id, timestamp: Date.now() });
+      }
+      if (arena.match_id) {
+        match_id = arena.match_id;
+        room.status = constant.ROOM.STATUS.playing;
+      }
     }
     cb({ room, match_id })
   }
@@ -128,6 +173,13 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
           startedMatch.curr_state.curr_turn,
           now,
         ));
+      }
+
+      // 实时多人游戏（贪吃蛇多人模式）：启动服务端权威 tick 循环
+      const startedGame = await MGame.findById(room.game_id, { slug: 1 }).lean(true);
+      const variant = room.settings?.variant as string | undefined;
+      if (startedMatch && startedGame && GameLogics[startedGame.slug]?.isRealtimeVariant?.(variant)) {
+        snakeRuntimeService.spawn(startedMatch as any);
       }
 
       // 机器人 socket 可能还在连接中、尚未加入 room 频道，会漏掉上面的广播。
@@ -300,15 +352,17 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       callback(false);
     }
   }
-  async function playerAction(match_id: string, movement: { player_id: string, [key: string]: any }, callback: (result: { success: boolean; message: string }) => void) {
+  async function playerAction(match_id: string, movement: { player_id: string, [key: string]: any }, callback?: (result: { success: boolean; message: string }) => void) {
+    // 实时游戏（多人贪吃蛇）的转向指令可以不带 ack；这里统一兜底，避免 callback 未定义时崩溃
+    const reply = typeof callback === 'function' ? callback : () => { };
     const player = await MPlayer.findById(movement.player_id);
     if (!player || player.user_id !== user_id) {
-      return callback({ success: false, message: '玩家不存在' });
+      return reply({ success: false, message: '玩家不存在' });
     }
     const match = await MMatch.findOne({ _id: match_id }).lean(true);
     if (match) {
       const game = await MGame.findById(match.game_id).lean(true);
-      if (!game) return callback({ success: false, message: '游戏不存在' })
+      if (!game) return reply({ success: false, message: '游戏不存在' })
 
       // 权威计时：落子前先按服务器时间结算本回合耗时。
       // 若落子方思考时间已把总额度耗尽，拒绝本次落子并判其超时负。
@@ -319,7 +373,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
         const timeoutLoser = findTimeout(tcRaw, currTurn, now);
         if (timeoutLoser) {
           const winner = match.players.find(p => p._id !== timeoutLoser);
-          callback({ success: false, message: '思考超时' });
+          reply({ success: false, message: '思考超时' });
           await roomService.gameover(match.room_id, match_id, winner?._id as string);
           const winnerPlayer = winner && await MPlayer.findById(winner._id).lean(true);
           io.to(`room:${match.room_id}`).emit('room:game-over', {
@@ -330,12 +384,14 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       }
 
       const { success, gameover, data } = await GameLogics[game.slug].excuteMove(match, movement)
-      callback({ success, message: '' });
+      reply({ success, message: '' });
       if (success) {
-        // 单人游戏进度上报（2048 等）：只更新玩家最高分，不广播、不结算。
+        // 实时游戏（多人贪吃蛇）的转向指令：由运行时 tick 统一广播快照，这里不回播
+        if (data?.silent) return;
+        // 单人游戏进度上报（2048/贪吃蛇无尽等）：只更新玩家最高分，不广播、不结算。
         if (data?.progress) {
-          const isRecord = await roomService.recordSoloScore(movement.player_id, data.score);
-          if (isRecord) console.log(`📊 刷新最高分 player=${movement.player_id} score=${data.score}`);
+          const isRecord = await roomService.recordSoloScore(movement.player_id, data.score, data.board);
+          if (isRecord) console.log(`📊 刷新最高分 player=${movement.player_id} board=${data.board || '-'} score=${data.score}`);
           return;
         }
         io.to(`room:${match.room_id}`).emit('room:player-action', data);
@@ -356,9 +412,10 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
           // 胜者由游戏逻辑在 data.winner 中指定（如黑白棋按子数、国际象棋逼和为平局）。
           // 缺省回退到落子方，保持象棋/五子棋行为不变；winner === '' 表示平局。
           const winnerId: string = data?.winner !== undefined ? data.winner : movement.player_id;
-          // data.scores：单人游戏（2048 等）上报的本局分数表；scoreMode='max' 表示
-          // 单人游戏按最高分记入排行榜（而非累加）。
-          await roomService.gameover(match.room_id, match_id, winnerId, data?.scores, data?.scoreMode)
+          // data.scores：单人游戏上报的本局分数表 / 多人贪吃蛇的分数表；
+          // scoreMode='max' 表示按该玩法最高分记入榜单（而非累加）；
+          // data.board：分榜 key（贪吃蛇 endless/multi）。
+          await roomService.gameover(match.room_id, match_id, winnerId, data?.scores, data?.scoreMode, data?.board)
           // data.score：本局得分，随结算广播下发给前端展示（对战游戏无此字段）。
           const scoreField = data?.score !== undefined ? { score: data.score, solo: !!data?.solo } : {};
           if (winnerId) {
@@ -375,7 +432,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
         }
       }
     } else {
-      callback({ success: false, message: '对局不存在' })
+      reply({ success: false, message: '对局不存在' })
     }
 
   }
@@ -481,8 +538,26 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     try {
       callback(true);
       console.log(`🏡 ${room._id} 👤 玩家 ${player._id} 认输`);
+
+      // 实时多人（贪吃蛇）：认输 = 自我淘汰，对局继续推进，由运行时判出最后存活者
+      const match = await MMatch.findById(data.match_id).lean(true);
+      const matchGame = match && await MGame.findById(match.game_id, { slug: 1 }).lean(true);
+      if (matchGame?.slug === 'snake' && match?.curr_state?.variant === 'multi') {
+        const ok = snakeRuntimeService.eliminate(data.match_id, data.player_id);
+        io.to(`room:${data.room_id}`).emit('room:message', {
+          player_id: player._id,
+          player_name: player.nickname || '玩家',
+          message: '认输退出本局',
+          timestamp: Date.now(),
+        });
+        if (!ok) console.log(`⚠️ 贪吃蛇认输未能定位蛇: match=${data.match_id} player=${data.player_id}`);
+        return;
+      }
+
       const winner_id = room.members.filter(m => m.member_type === constant.MEMBER.TYPE.player).map(m => m._id).find(_id => _id !== data.player_id)
       await roomService.gameover(data.room_id, data.match_id, winner_id as string)
+      // 其他实时对局兜底：结算后停掉 tick，避免继续推进并二次结算
+      snakeRuntimeService.stop(data.match_id);
       const winner = await MPlayer.findById(winner_id).lean(true)
       io.to(`room:${data.room_id}`).emit('room:game-over', pick(winner, ['_id', 'nickname']))
     } catch (error) {
@@ -495,19 +570,24 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
    * 离开房间
    * @description 判断玩家是不是房间中的人,离开操作 从房间中去掉该玩家,并重置游戏玩家的当前房间.向房间发送消息
    */
-  async function leaveRoom(data: { room_id: string; player_id: string }, callback: (success: boolean, message?: string) => void) {
+  async function leaveRoom(data: { room_id: string; player_id: string }, callback?: (success: boolean, message?: string) => void) {
+    // callback 是可选的（客户端可能只发不带 ack 的 leave）；缺了也不能抛错拖垮进程
+    if (!data?.room_id || !data?.player_id) {
+      callback?.(false, '参数错误');
+      return;
+    }
     if (!isLoggedIn) {
-      callback(false, '请先登录');
+      callback?.(false, '请先登录');
       return;
     }
 
     try {
       const result = await roomService.leaveRoom(data.room_id, data.player_id);
       if (!result.ok) {
-        callback(false, result.reason);
+        callback?.(false, result.reason);
         return;
       }
-      callback(true, result.dissolved ? '房间已解散' : '已离开房间');
+      callback?.(true, result.dissolved ? '房间已解散' : '已离开房间');
 
       socket.room_id = undefined;
       socket.leave(`room:${data.room_id}`);
@@ -523,7 +603,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       }
     } catch (error) {
       console.log(error, 'err')
-      callback(false, '离开失败');
+      callback?.(false, '离开失败');
     }
   }
 

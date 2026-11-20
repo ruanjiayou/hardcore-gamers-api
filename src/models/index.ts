@@ -17,6 +17,10 @@ export const MGame = mongoose.model<IGame>('games', new mongoose.Schema({
   status: Number,
   // solo=单人直接开局（无房间）；room=房间制（棋类/组队）
   mode: { type: String, default: 'room' },
+  // 玩法变体：同一游戏可同时提供单人玩法与房间玩法（贪吃蛇：无尽/多人）
+  variants: [{ _id: false, key: String, label: String, mode: String, board: String, desc: String, numbers: { min: Number, max: Number } }],
+  // 排行榜分榜：每个玩法一张榜
+  boards: [{ _id: false, key: String, label: String }],
   numbers: { min: Number, max: Number },
   role_config: {
     mode: String, // fixed/team/custom
@@ -92,6 +96,8 @@ export const MPlayer = mongoose.model<IPlayer & { room_id: string }>('players', 
   type: { type: String }, // player robot
   level: { type: Number, default: 1 },
   score: { type: Number, default: 0 },
+  // 分榜最高分：{ [boardKey]: score }
+  boards: mongoose.SchemaTypes.Mixed,
   exp: { type: Number, default: 0 },
   status: Number,
   state: String,

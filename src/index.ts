@@ -19,6 +19,10 @@ import config from './config';
 import { userService } from './services/UserService';
 import { seedAll } from './seed';
 import { timeControlService } from './services/TimeControlService';
+import { snakeRuntimeService } from './services/SnakeRuntimeService';
+import { roomService } from './services/RoomService';
+import { MPlayer } from './models';
+import { pick } from 'lodash';
 
 const app: Express = express();
 const server = http.createServer(app);
@@ -80,33 +84,35 @@ const usersMap = new Map<string, string>();
  * Socket.io 连接处理
  */
 io.on('connection', async (socket: AuthSocket) => {
-  const user_id = socket.user_id!;
+  const user_id = socket.user_id || '';
 
-  console.log(`\n✅ 用户连接: ${user_id} (${socket.id})`);
-  const socket_id = usersMap.get(user_id);
-  if (socket_id) {
-    const oldSocket = io.sockets.sockets.get(socket_id);
-    if (oldSocket) {
-      oldSocket.emit('user:kicked', { message: '您在另一个设备登录' })
-      oldSocket.disconnect(true)
+  console.log(`\n✅ 用户连接: ${user_id || '游客'} (${socket.id})`);
+  if (user_id) {
+    const socket_id = usersMap.get(user_id);
+    if (socket_id) {
+      const oldSocket = io.sockets.sockets.get(socket_id);
+      if (oldSocket) {
+        oldSocket.emit('user:kicked', { message: '您在另一个设备登录' })
+        oldSocket.disconnect(true)
+      }
     }
-  }
-  // 记录当前连接，供多设备登录检测使用（原实现只 get 不 set，导致检测永不触发）
-  usersMap.set(user_id, socket.id);
+    // 记录当前连接，供多设备登录检测使用（原实现只 get 不 set，导致检测永不触发）
+    usersMap.set(user_id, socket.id);
 
-  // 加入玩家专属的 Socket.io 房间
-  socket.join(`user:${user_id}`);
+    // 加入玩家专属的 Socket.io 房间
+    socket.join(`user:${user_id}`);
 
-  // 不能异步,不然获取用户信息超时
-  const key = config.prefix + 'stats:users'
-  redis.del(key);
-  // 广播用户上线
-  if (socket.room_id) {
-    io.to(`room:${socket.room_id}`).emit('player:change', {
-      player_id: socket.player_id, field: 'atline', value: true, online: true, timestamp: Date.now()
-    });
+    // 不能异步,不然获取用户信息超时
+    const key = config.prefix + 'stats:users'
+    redis.del(key);
+    // 广播用户上线
+    if (socket.room_id) {
+      io.to(`room:${socket.room_id}`).emit('player:change', {
+        player_id: socket.player_id, field: 'atline', value: true, online: true, timestamp: Date.now()
+      });
+    }
+    io.emit('user:change', { user_id, field: 'atline', value: true, atline: true, timestamp: Date.now() });
   }
-  io.emit('user:change', { user_id, field: 'atline', value: true, atline: true, timestamp: Date.now() });
 
   // 注册事件处理器
   setupLobbyHandlers(io, socket, user_id);
@@ -127,6 +133,9 @@ io.on('connection', async (socket: AuthSocket) => {
    */
   socket.on('disconnect', async (reason) => {
     console.log(reason)
+    // 游客没有用户身份，无需清理上线状态
+    if (!user_id) return;
+
     // 只有在没有其它设备在线时才清理映射，避免踢掉仍在线的新连接
     if (usersMap.get(user_id) === socket.id) {
       usersMap.delete(user_id);
@@ -137,6 +146,8 @@ io.on('connection', async (socket: AuthSocket) => {
     await userService.getStats()
     // 广播玩家离线（payload 与前端约定：field/value 形式）
     if (socket.room_id) {
+      // 直接关页面/刷新时没有"点击离开"事件：按房间里的实时对局把分数兜底记榜（$max 幂等）
+      if (socket.player_id) void snakeRuntimeService.syncScoreByRoom(socket.room_id, socket.player_id);
       io.to(`room:${socket.room_id}`).emit('player:change', {
         player_id: socket.player_id, field: 'atline', value: false, online: false, timestamp: Date.now()
       });
@@ -167,6 +178,29 @@ server.listen(PORT, async () => {
   }
   // 启动计时巡检器：启用计时的对局由服务端权威判负（含玩家挂机不落子的场景）
   timeControlService.start(io, 1000);
+
+  // 修复历史遗留的悬空 room_id（房间已删但玩家还指着它 → 前端进游戏会跳到不存在的房间）
+  try {
+    await playerService.repairDanglingRooms();
+  } catch (error) {
+    console.error('❌ 悬空 room_id 清理失败（服务继续启动）:', error);
+  }
+
+  // 多人贪吃蛇运行时：服务端权威 tick。结算走 roomService.gameover（分榜 multi，按单局最高分）
+  snakeRuntimeService.start(io, async ({ room_id, match_id, winner, scores, variant }) => {
+    const board = variant === 'endless' ? 'endless' : 'multi';
+    // 两种玩法都按"该玩法最高分"记录（无尽跨重生、多人单局），不累加
+    await roomService.gameover(room_id, match_id, winner, scores, 'max', board);
+    if (variant === 'multi') {
+      const winnerPlayer = winner ? await MPlayer.findById(winner).lean(true) : null;
+      io.to(`room:${room_id}`).emit('room:game-over', winner
+        ? { ...pick(winnerPlayer || {}, ['_id', 'nickname']), scores }
+        : { _id: '', nickname: '', draw: true, scores });
+    }
+    console.log(`🐍 贪吃蛇 ${variant} 结束 match=${match_id} winner=${winner || '—'}`);
+  });
+  // 重启后回收中断的多人对局（否则房间会永远停在 playing）
+  await snakeRuntimeService.resetStaleMatches();
   console.log(`\n🚀 游戏大厅服务器启动成功!`);
   console.log(`📍 地址: http://localhost:${PORT}`);
   console.log(`🔌 WebSocket: ws://localhost:${PORT}`);

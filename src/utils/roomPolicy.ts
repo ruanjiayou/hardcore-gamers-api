@@ -23,6 +23,8 @@ export interface PolicyRoom {
   transient?: boolean
   allowSpectate?: boolean
   members?: PolicyMember[]
+  /** 玩法变体：endless（无尽挑战）是常驻对局，随时可以退出 */
+  variant?: string
 }
 
 export interface Decision {
@@ -86,8 +88,10 @@ export function resolveLeaveAction(room: PolicyRoom, player_id: string): LeaveDe
   // 单人快开房：随时可离开（含游戏中——单人无对手，分数已实时上报），离开即销毁
   if (room.transient) return { action: 'destroy' }
 
+  // 无尽挑战是常驻对局（死了可重生、随时能走），不套用"进行中禁止离开"
+  const endlessArena = room.variant === 'endless'
   // 对局进行中禁止离开，避免中途离场造成房间/对局状态不一致
-  if (room.status === constant.ROOM.STATUS.playing) {
+  if (room.status === constant.ROOM.STATUS.playing && !endlessArena) {
     return { action: 'blocked', reason: '游戏进行中不能离开，请先认输或等待对局结束' }
   }
 

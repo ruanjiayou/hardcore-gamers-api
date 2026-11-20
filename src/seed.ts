@@ -20,13 +20,31 @@ export interface SeedResult {
   kept: number;
 }
 
-/** 幂等写入种子游戏：已存在相同 slug 则跳过，不覆盖用户已有数据。 */
+/**
+ * 幂等写入种子游戏：已存在相同 slug 则保留用户数据，但同步 mode 等代码权威的结构性字段。
+ * （旧库记录早于 mode 字段写入，跳过会导致 2048 被当成房间模式、单人快开被拒。）
+ */
 export async function seedGames(): Promise<SeedResult> {
   let inserted = 0;
   let kept = 0;
   for (const game of SEED_GAMES) {
     const existing = await MGame.findOne({ slug: game.slug }).lean(true);
     if (existing) {
+      // 结构性字段以种子为准回填/校正，其余字段不覆盖运营数据
+      const patch: Record<string, unknown> = {};
+      if (existing.mode !== game.mode) patch.mode = game.mode;
+      if (existing.numbers?.min !== game.numbers.min || existing.numbers?.max !== game.numbers.max) {
+        patch.numbers = game.numbers;
+      }
+      // 玩法变体 / 分榜也是代码权威的结构性配置（贪吃蛇：无尽 + 多人、两张榜）
+      const variantsChanged = JSON.stringify(existing.variants || []) !== JSON.stringify(game.variants || []);
+      if (variantsChanged) patch.variants = game.variants || [];
+      const boardsChanged = JSON.stringify(existing.boards || []) !== JSON.stringify(game.boards || []);
+      if (boardsChanged) patch.boards = game.boards || [];
+      if (Object.keys(patch).length > 0) {
+        await MGame.updateOne({ _id: existing._id }, { $set: patch });
+        console.log(`🔧 游戏数据校正: ${game.slug} ${JSON.stringify(patch)}`);
+      }
       kept++;
       continue;
     }
@@ -87,8 +105,15 @@ export async function seedOfficialRooms(): Promise<SeedResult> {
         // 空的已解散官方房：复活，保证每游戏始终有 4 桌
         await MRoom.updateOne(
           { _id: room._id },
-          { $set: { status: room.status, members: [], owner_id: '', match_id: '', updatedAt: new Date() } }
+          { $set: { status: room.status, members: [], owner_id: '', match_id: '', settings: room.settings, updatedAt: new Date() } }
         );
+      } else {
+        // 结构性字段校正：混合玩法游戏（贪吃蛇）的官方桌必须指向房间玩法变体，
+        // 否则老库里的官方桌会缺 settings.variant，客户端按单人玩法渲染。
+        const wantVariant = room.settings?.variant;
+        if (wantVariant && existing.settings?.variant !== wantVariant) {
+          await MRoom.updateOne({ _id: room._id }, { $set: { 'settings.variant': wantVariant } });
+        }
       }
       kept++;
       continue;

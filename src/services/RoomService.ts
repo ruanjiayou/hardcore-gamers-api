@@ -12,6 +12,7 @@ import constant, { MemberType, PlayerType } from '../constant'
 import GameLogics from '../games'
 import { normalizeTimeControl, buildMatchTimeControl } from '../utils/timeControl'
 import { canSpectate, resolveLeaveAction } from '../utils/roomPolicy'
+import { snakeRuntimeService } from './SnakeRuntimeService';
 
 export class RoomService {
 
@@ -74,6 +75,109 @@ export class RoomService {
   async getRoomById(room_id: string): Promise<IRoom | null> {
     const room = await MRoom.findById(room_id).lean(true);
     return room || null;
+  }
+
+  /**
+   * 房间自愈：把「房间」与「玩家 / 对局」之间漂移的状态修回来，返回修好后的房间。
+   *
+   * 两类脏数据都会让玩家卡进一个"打不了"的房间：
+   * - **悬空成员**：members 里指向的玩家记录已被删除（例如清理测试号），
+   *   玩家列表会渲染出一个空白名字，而且把房间人数撑成"有人"→ 匹配优先选它；
+   * - **幽灵对局**：status=playing 但找不到进行中的对局（对局已结算 / 对局记录丢失），
+   *   前端会照样渲染对局画布，却永远收不到快照，表现为「一直显示连接中」。
+   */
+  async reconcileRoom(room_id: string): Promise<any | null> {
+    const room = await MRoom.findById(room_id).lean(true) as any;
+    if (!room || room.status === constant.ROOM.STATUS.deleted) return null;
+
+    const ids: string[] = (room.members || []).map((m: any) => String(m._id));
+    if (ids.length) {
+      const alive = await MPlayer.find({ _id: { $in: ids } }, { _id: 1 }).lean(true);
+      const aliveIds = new Set(alive.map(p => String(p._id)));
+      const ghosts = (room.members || []).filter((m: any) => !aliveIds.has(String(m._id)));
+      if (ghosts.length) {
+        await MRoom.updateOne(
+          { _id: room_id },
+          { $pull: { members: { _id: { $in: ghosts.map((g: any) => g._id) } } } } as any,
+        );
+        room.members = room.members.filter((m: any) => aliveIds.has(String(m._id)));
+        console.log(`🧹 房间 ${room_id} 清理 ${ghosts.length} 个悬空成员（玩家记录已不存在）`);
+      }
+    }
+
+    if (room.status === constant.ROOM.STATUS.playing) {
+      const live = room.match_id
+        ? await MMatch.findOne(
+          { _id: room.match_id, status: constant.MATCH.STATUS.playing },
+          { _id: 1 },
+        ).lean(true)
+        : await MMatch.findOne(
+          { room_id, status: constant.MATCH.STATUS.playing },
+          { _id: 1 },
+        ).lean(true);
+      if (!live) {
+        // 房间停在 playing 但没有对局 → 重置回等待，否则前端一直等一个不存在的快照
+        await MRoom.updateOne(
+          { _id: room_id, status: constant.ROOM.STATUS.playing },
+          { $set: { status: constant.ROOM.STATUS.waiting, match_id: '', updatedAt: new Date() } },
+        );
+        room.status = constant.ROOM.STATUS.waiting;
+        room.match_id = '';
+        console.log(`🧹 房间 ${room_id} 处于 playing 但无进行中的对局，已重置为等待`);
+      } else if (String(room.match_id) !== String(live._id)) {
+        room.match_id = live._id;
+      }
+    }
+    return room;
+  }
+
+  /** 同一房间的自动开局去重（单进程权威，避免匹配/进房两条路径同时建局） */
+  private arenaLocks = new Map<string, Promise<{ match_id: string, started: boolean }>>();
+
+  /**
+   * 保证贪吃蛇房间是"可玩"的：
+   * - 房间在局中但服务端运行时已丢失（重启、异常退出）→ 按库里局面重建 tick；
+   * - 无尽竞技房是常开对局：只要房里有玩家且还没开局，就直接开（进房即开局，
+   *   回房/刷新同样成立，不会停在"等待开局"的空白画面）。
+   *
+   * 非贪吃蛇房间一律返回空，调用方按原逻辑处理。
+   */
+  async ensureSnakeArena(room_id: string): Promise<{ match_id: string, started: boolean }> {
+    const running = this.arenaLocks.get(room_id);
+    if (running) return running;
+    const task = this.doEnsureSnakeArena(room_id).finally(() => this.arenaLocks.delete(room_id));
+    this.arenaLocks.set(room_id, task);
+    return task;
+  }
+
+  private async doEnsureSnakeArena(room_id: string): Promise<{ match_id: string, started: boolean }> {
+    const room = await MRoom.findById(room_id).lean(true) as any;
+    if (!room || room.status === constant.ROOM.STATUS.deleted) return { match_id: '', started: false };
+    const game = await MGame.findById(room.game_id, { slug: 1 }).lean(true) as any;
+    if (!game || game.slug !== 'snake') return { match_id: '', started: false };
+
+    if (room.status === constant.ROOM.STATUS.playing && room.match_id) {
+      if (!snakeRuntimeService.has(room.match_id)) {
+        const match = await MMatch.findById(room.match_id).lean(true) as any;
+        if (match && match.status === constant.MATCH.STATUS.playing) {
+          snakeRuntimeService.spawn(match);
+          console.log(`🐍 房间 ${room_id} 的运行时缺失，已按库里局面重建 match=${room.match_id}`);
+        }
+      }
+      return { match_id: room.match_id, started: false };
+    }
+
+    // 只有无尽竞技房"进房即开局"；多人对战必须等房主点开始
+    if (room.settings?.variant !== 'endless') return { match_id: '', started: false };
+    const players = (room.members || []).filter((m: any) => m.member_type === MemberType.player);
+    if (!players.length) return { match_id: '', started: false };
+
+    const match_id = await this.startGame(room_id);
+    if (!match_id) return { match_id: '', started: false };
+    const started = await MMatch.findById(match_id).lean(true) as any;
+    if (started) snakeRuntimeService.spawn(started);
+    console.log(`🐍 无尽竞技房 ${room_id} 自动开局，match=${match_id}`);
+    return { match_id, started: true };
   }
 
   /**
@@ -156,8 +260,9 @@ export class RoomService {
         return { success: false, reason: '房间已满' };
       }
 
-      // 检查房间状态
-      if (room.status !== constant.ROOM.STATUS.waiting) {
+      // 检查房间状态：无尽挑战是常驻竞技房，开局后仍可随时进出
+      const endlessArena = room.settings?.variant === 'endless';
+      if (room.status !== constant.ROOM.STATUS.waiting && !endlessArena) {
         console.log(`❌ 房间游戏已开始: ${data.room_id}`);
         return { success: false, reason: '房间游戏已开始' };
       }
@@ -204,9 +309,19 @@ export class RoomService {
     const room = await MRoom.findById(room_id).lean(true);
     if (!room) return { ok: false, reason: '房间不存在' };
 
-    const decision = resolveLeaveAction(room, player_id);
+    const variant = room.settings?.variant as string | undefined;
+    const endlessArena = variant === 'endless';
+    const decision = resolveLeaveAction({ ...room, variant }, player_id);
     if (decision.action === 'blocked') {
       return { ok: false, reason: decision.reason };
+    }
+    // 无尽模式：任何离开路径（最后一人退出 / 房主解散 / 普通离房）都要先把分数同步到榜单。
+    // 死亡那一 tick 已记过一次，$max 幂等；这里主要覆盖"还活着就点离开/关闭"的情况。
+    const liveMatch = endlessArena && room.match_id ? room.match_id : '';
+    if (liveMatch) {
+      await snakeRuntimeService.syncScore(liveMatch, player_id);
+      // 解散时房间会立刻销毁运行时，不需要再单独移蛇
+      if (decision.action !== 'destroy') snakeRuntimeService.removePlayer(liveMatch, player_id);
     }
 
     // 离开即销毁（临时房 / 自建房房主离开）
@@ -234,6 +349,8 @@ export class RoomService {
     console.log(`👤 玩家 ${player_id} 离开房间 ${room_id}，当前人数: ${remainMembers.length}${decision.reset ? '（空房重置）' : ''}`);
 
     if (decision.reset) {
+      // 无尽模式没人了：结束这一局并按各自最高分结算（房间已回等待态，幂等）
+      if (liveMatch) await snakeRuntimeService.stopAndFinish(liveMatch);
       const robotIds = room.members.filter(m => m.player_type === constant.PLAYER.TYPE.robot).map(m => m._id);
       if (robotIds.length) {
         // 复位机器人状态，使其可被其他房间重新占用
@@ -320,13 +437,17 @@ export class RoomService {
       ? buildMatchTimeControl(config, players.map(p => p._id), Date.now())
       : undefined;
 
+    // 玩法变体（如贪吃蛇 endless/multi）：写入对局状态，供服务端/客户端判定玩法与分榜
+    const variant = room.settings?.variant as string | undefined;
+    const variantState = variant ? { variant } : {};
+
     await MMatch.create({
       _id: match_id,
       game_id: room.game_id,
       room_id: room._id,
       status: constant.MATCH.STATUS.playing,
-      init_state: { ...state, players, ...(timeControl ? { timeControl } : {}) },
-      curr_state: { ...state, players, curr_turn, ...(timeControl ? { timeControl } : {}) },
+      init_state: { ...state, players, ...variantState, ...(timeControl ? { timeControl } : {}) },
+      curr_state: { ...state, players, curr_turn, ...variantState, ...(timeControl ? { timeControl } : {}) },
       players: assigned,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -357,14 +478,17 @@ export class RoomService {
 
   /**
    * 单人游戏实时记录最高分（不结算、不改对局状态）。
-   * 用 $max 写入 MPlayer.score：排行榜展示的是"该游戏历史最高分"，
-   * 中途退出也不会丢分，且重复上报幂等。
+   * 用 $max 写入 MPlayer.score 与分榜 MPlayer.boards[board]：
+   * 排行榜展示的是"该玩法历史最高分"，中途退出也不会丢分，且重复上报幂等。
+   * @param board 分榜 key（如贪吃蛇 endless）；缺省只写总分（2048/俄罗斯方块等）
    */
-  async recordSoloScore(player_id: string, score: number): Promise<boolean> {
+  async recordSoloScore(player_id: string, score: number, board?: string): Promise<boolean> {
     if (!Number.isFinite(score) || score < 0) return false;
+    const max: Record<string, number> = { score: Math.floor(score) };
+    if (board) max[`boards.${board}`] = Math.floor(score);
     const res = await MPlayer.updateOne(
       { _id: player_id },
-      { $max: { score: Math.floor(score) } }
+      { $max: max }
     );
     return res.modifiedCount > 0; // true 表示刷新了历史最高分
   }
@@ -377,13 +501,16 @@ export class RoomService {
    *               不再使用 ±1。
    * @param scoreMode 'inc'（默认，累加到 MPlayer.score）| 'max'（取历史最高分，
    *                  用于单人游戏，保证排行榜展示最佳成绩且实时上报不重复累加）。
+   * @param board 可选分榜 key（多人贪吃蛇 multi 等）：结算时同时用 $max 写入
+   *              MPlayer.boards[board]，让分榜展示"该玩法单局最高分"。
    */
   async gameover(
     room_id: string,
     match_id: string,
     winner_player_id: string,
     scores?: Record<string, number>,
-    scoreMode: 'inc' | 'max' = 'inc'
+    scoreMode: 'inc' | 'max' = 'inc',
+    board?: string,
   ) {
     const room = await MRoom.findOne({ _id: room_id }, { members: 1 }).lean(true);
     if (!room) {
@@ -433,6 +560,12 @@ export class RoomService {
       const isPlayer = m.member_type === MemberType.player;
       // 单人游戏（scoreMode='max'）：score 取历史最高分，与其他对局累加语义区分开。
       const useMax = isPlayer && !!scores && scoreMode === 'max';
+      // 分榜：无论 inc/max，都按"该玩法单局最高分"记录（贪吃蛇多人榜）
+      const maxFields: Record<string, number> = {};
+      if (useMax) maxFields.score = Math.floor(scoreOf(m._id));
+      if (isPlayer && scores && board) {
+        maxFields[`boards.${board}`] = Math.floor(scoreOf(m._id));
+      }
       return {
         updateOne: {
           filter: { _id: m._id },
@@ -455,7 +588,7 @@ export class RoomService {
                   : (winner_player_id && m._id === winner_player_id ? 1 : 0),
               } : {}),
             },
-            ...(useMax ? { $max: { score: Math.floor(scoreOf(m._id)) } } : {}),
+            ...(Object.keys(maxFields).length ? { $max: maxFields } : {}),
           },
         },
       };
@@ -474,6 +607,7 @@ export class RoomService {
       return;
     }
     await MRoom.updateOne({ _id: room_id }, { $set: { status: constant.ROOM.STATUS.deleted } });
+    if (room.match_id) snakeRuntimeService.stop(room.match_id);
     await this.invalidateStats();
     if (room.members?.length) {
       const memberIds = room.members.map(m => m._id);

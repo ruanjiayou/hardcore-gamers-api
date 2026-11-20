@@ -10,6 +10,25 @@ export interface IRoleConfig {
   roles: { name: string; size: number }[]
 }
 // ========== 游戏相关 ==========
+
+/** 分榜定义：同一游戏内不同玩法各自一张排行榜（如贪吃蛇的无尽榜/多人榜） */
+export interface IGameBoard {
+  key: string;
+  label: string;
+}
+
+/** 玩法变体：一个游戏可以同时提供单人玩法与房间玩法（如贪吃蛇的无尽/多人） */
+export interface IGameVariant {
+  key: string;
+  label: string;
+  mode: 'solo' | 'room';
+  /** 该玩法的排行榜 key；缺省用 variant.key */
+  board?: string;
+  desc?: string;
+  /** 该玩法的人数限制（缺省用 game.numbers） */
+  numbers?: { min: number, max: number };
+}
+
 export interface IGame {
   _id: string;
   slug: string;
@@ -24,6 +43,10 @@ export interface IGame {
   createdAt: Date;
   updatedAt: Date;
   role_config: object;
+  /** 玩法变体（单人/房间混合的游戏才需要），缺省按 mode 单一形态 */
+  variants?: IGameVariant[];
+  /** 排行榜分榜（缺省只有一张总榜，读 MPlayer.score） */
+  boards?: IGameBoard[];
   rooms?: number;
   players?: number;
 }
@@ -98,6 +121,8 @@ export interface IPlayer {
   title: string; // 称号
   level: number; // 等级
   score: number; // 分数
+  /** 分榜最高分：{ [boardKey]: score }，排行榜按玩法分别展示 */
+  boards?: Record<string, number>;
   exp: number; // 经验值
   max_level: number;
   stats: PlayerStats;

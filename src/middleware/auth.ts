@@ -36,7 +36,7 @@ export function validateCredentials(username: string, password: string): boolean
 export async function authMiddleware(socket: AuthSocket, next: (err?: Error) => void) {
   const token = socket.handshake.auth.token || socket.handshake.query.token;
   const ticket = socket.handshake.auth.ticket || socket.handshake.query.ticket;
-  let user_id = socket.handshake.auth.user_id || socket.handshake.query.user_id || '';
+  let user_id = '';
   if (token) {
     try {
       const data: any = jwt.verify(token, config.secret)
@@ -55,13 +55,17 @@ export async function authMiddleware(socket: AuthSocket, next: (err?: Error) => 
     } catch (err) {
       return next(new Error('票据错误'))
     }
-  } else if (user_id) {
-    socket.isGuest = true;
-    socket.isLoggedIn = true;
   } else {
-    return next(new Error('请登陆'))
+    // 未登录：允许匿名连接，仅供游客浏览大厅（游戏列表/统计/排行榜只读）。
+    // 所有写操作（建房/加入/开局/落子/聊天）在处理器里按 isLoggedIn 拒绝。
+    socket.isLoggedIn = false;
+    socket.isGuest = true;
+    socket.user_id = '';
+    socket.redis = redis;
+    console.log('🔐 游客（匿名）连接');
+    return next();
   }
-  // 获取或创建玩家
+  // 获取用户
   const user = await userService.getInfoById(user_id);
   if (!user) {
     return next(new Error('验证失败'))

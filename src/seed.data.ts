@@ -106,6 +106,64 @@ export const SEED_GAMES: IGame[] = [
     createdAt: new Date(),
     updatedAt: new Date(),
   },
+  {
+    _id: 'tetris',
+    slug: 'tetris',
+    title: '俄罗斯方块',
+    desc: '经典俄罗斯方块，7 种方块的旋转与消行，等级越高下落越快。单人模式，成绩计入排行榜。',
+    icon: '🧱',
+    genre: GameGenre.puzzle,
+    // 单人游戏：主页直接「开始游戏」开一局，不走房间
+    mode: 'solo',
+    status: 1,
+    numbers: { min: 1, max: 1 },
+    role_config: {
+      mode: 'fixed',
+      roles: [{ name: '玩家', size: 1 }],
+    },
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  },
+  {
+    _id: 'snake',
+    slug: 'snake',
+    title: '贪吃蛇',
+    desc: '经典贪吃蛇：虚拟摇杆任意方向实时转向，无尽挑战 1–6 人同图刷分（死亡弹框选重生/退出），多人对战 2–4 人竞技。',
+    icon: '🐍',
+    genre: GameGenre.puzzle,
+    // 两种玩法都是房间制：官方桌提前建好，进房即玩
+    mode: 'room',
+    status: 1,
+    numbers: { min: 1, max: 6 },
+    variants: [
+      {
+        key: 'endless',
+        label: '无尽挑战',
+        mode: 'room',
+        board: 'endless',
+        desc: '1–6 人同图刷分，任意方向转向，死亡即记榜，弹框选重生（3s 无敌）或退出',
+        numbers: { min: 1, max: 6 },
+      },
+      {
+        key: 'multi',
+        label: '多人对战',
+        mode: 'room',
+        board: 'multi',
+        desc: '2–4 人同场，吃食物变长，活到最后者获胜',
+        numbers: { min: 2, max: 4 },
+      },
+    ],
+    boards: [
+      { key: 'endless', label: '无尽榜' },
+      { key: 'multi', label: '多人榜' },
+    ],
+    role_config: {
+      mode: 'fixed',
+      roles: [{ name: '玩家', size: 4 }],
+    },
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  },
 ];
 
 /**
@@ -120,24 +178,39 @@ export function officialRoomSeeds(): IRoom[] {
   const rooms: IRoom[] = [];
   for (const game of SEED_GAMES) {
     if (game.mode !== 'room') continue;
-    for (let i = 1; i <= OFFICIAL_ROOMS_PER_GAME; i++) {
-      rooms.push({
-        _id: `official-${game.slug}-${i}`,
-        game_id: game._id,
-        name: `${game.title} · 官方 ${i} 号桌`,
-        status: RoomStatus.waiting,
-        owner_id: '',
-        members: [],
-        seats: [],
-        numbers: game.numbers,
-        isPrivate: false,
-        official: true,
-        allowSpectate: true,
-        transient: false,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        settings: {},
-      });
+    // 每种房间玩法变体各建一组官方桌（贪吃蛇：无尽 4 桌 + 多人 4 桌）。
+    // 无变体的游戏沿用老命名 official-{slug}-{i}；有变体时多人桌保留老 id（老库不迁移），
+    // 其余变体加后缀，避免与已存在的官方桌撞号。
+    const variants = (game.variants || []).filter(v => v.mode === 'room');
+    const groups = variants.length
+      ? variants.map(v => ({
+        variant: v.key,
+        label: v.label,
+        numbers: v.numbers || game.numbers,
+        prefix: v.key === 'multi' ? `official-${game.slug}` : `official-${game.slug}-${v.key}`,
+      }))
+      : [{ variant: '', label: '官方', numbers: game.numbers, prefix: `official-${game.slug}` }];
+
+    for (const group of groups) {
+      for (let i = 1; i <= OFFICIAL_ROOMS_PER_GAME; i++) {
+        rooms.push({
+          _id: `${group.prefix}-${i}`,
+          game_id: game._id,
+          name: `${game.title} · ${group.label} ${i} 号桌`,
+          status: RoomStatus.waiting,
+          owner_id: '',
+          members: [],
+          seats: [],
+          numbers: group.numbers,
+          isPrivate: false,
+          official: true,
+          allowSpectate: true,
+          transient: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          settings: group.variant ? { variant: group.variant } : {},
+        });
+      }
     }
   }
   return rooms;
@@ -157,6 +230,7 @@ export const SEED_ROBOTS: SeedRobot[] = [
   { user_id: 'robot-user-xiangqi', player_id: 'robot-player-xiangqi', user_name: '🤖 象棋大师', game_id: 'xiangqi', slug: 'xiangqi' },
   { user_id: 'robot-user-othello', player_id: 'robot-player-othello', user_name: '🤖 黑白棋大师', game_id: 'othello', slug: 'othello' },
   { user_id: 'robot-user-international-chess', player_id: 'robot-player-international-chess', user_name: '🤖 国际象棋大师', game_id: 'international-chess', slug: 'international-chess' },
+  { user_id: 'robot-user-snake', player_id: 'robot-player-snake', user_name: '🤖 贪吃蛇大师', game_id: 'snake', slug: 'snake' },
 ];
 
 /** 机器人玩家的初始状态，供 seed 与回收逻辑共用 */
