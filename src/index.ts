@@ -37,8 +37,6 @@ const io = new Server(server, {
   pingTimeout: 60000
 });
 
-const PORT = process.env.PORT || 3000;
-
 /**
  * 中间件设置
  */
@@ -52,7 +50,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '🎮 游戏大厅服务器',
     version: '1.0.0',
-    websocket: `ws://localhost:${PORT}`,
+    websocket: `ws://localhost:${config.port}`,
     docs: '/api/docs'
   });
 });
@@ -169,7 +167,7 @@ app.use((req, res) => {
 /**
  * 启动服务器
  */
-server.listen(PORT, async () => {
+server.listen(config.port, async () => {
   // 确保 games 有基础游戏、players 有机器人账号，否则列表 loading / 添加机器人失败
   try {
     await seedAll();
@@ -202,10 +200,10 @@ server.listen(PORT, async () => {
   // 重启后回收中断的多人对局（否则房间会永远停在 playing）
   await snakeRuntimeService.resetStaleMatches();
   console.log(`\n🚀 游戏大厅服务器启动成功!`);
-  console.log(`📍 地址: http://localhost:${PORT}`);
-  console.log(`🔌 WebSocket: ws://localhost:${PORT}`);
-  console.log(`📊 健康检查: http://localhost:${PORT}/api/health`);
-  console.log(`📈 统计信息: http://localhost:${PORT}/api/stats\n`);
+  console.log(`📍 地址: http://localhost:${config.port}`);
+  console.log(`🔌 WebSocket: ws://localhost:${config.port}`);
+  console.log(`📊 健康检查: http://localhost:${config.port}/api/health`);
+  console.log(`📈 统计信息: http://localhost:${config.port}/api/stats\n`);
 });
 
 /**

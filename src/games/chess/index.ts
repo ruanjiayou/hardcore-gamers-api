@@ -7,7 +7,7 @@ import {
   type Color, type Action, type GameState,
 } from "./rules";
 
-export default class InternationalChess {
+export default class Chess {
   static getInitState(_player_id?: string) {
     return { curr_turn: '', ...createInitialState() };
   }

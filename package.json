@@ -5,13 +5,14 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "dev": "bun run --hot src/index.ts",
-    "start": "bun run src/index.ts",
-    "build": "bun build src/index.ts --outdir dist",
-    "seed": "bun run src/seed.ts",
+    "dev": "NODE_ENV=test bun run --hot src/index.ts",
+    "start": "NODE_ENV=test bun run src/index.ts",
+    "build": "bun build --target bun src/index.ts --outdir dist",
+    "seed": "NODE_ENV=test bun run src/seed.ts",
     "test": "bun test"
   },
   "dependencies": {
+    "etcd3": "^1.1.2",
     "express": "^4.18.2",
     "ioredis": "5.9.3",
     "jsonwebtoken": "9.0.3",

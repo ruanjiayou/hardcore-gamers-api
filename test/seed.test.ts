@@ -5,7 +5,7 @@ describe('种子数据一致性', () => {
   test('基础游戏：五子棋、象棋、黑白棋、国际象棋、2048、俄罗斯方块、贪吃蛇', () => {
     expect(SEED_GAMES.length).toBe(7);
     const slugs = SEED_GAMES.map(g => g.slug).sort();
-    expect(slugs).toEqual(['2048', 'gomoku', 'international-chess', 'othello', 'snake', 'tetris', 'xiangqi']);
+    expect(slugs).toEqual(['2048', 'chess', 'gomoku', 'othello', 'snake', 'tetris', 'xiangqi']);
     const soloSlugs = ['2048', 'tetris'];
     SEED_GAMES.forEach(g => {
       expect(g._id).toBe(g.slug);
@@ -79,7 +79,7 @@ describe('种子数据一致性', () => {
   test('机器人账号，每个游戏一个，id 唯一', () => {
     expect(SEED_ROBOTS.length).toBe(5);
     const slugs = SEED_ROBOTS.map(r => r.slug).sort();
-    expect(slugs).toEqual(['gomoku', 'international-chess', 'othello', 'snake', 'xiangqi']);
+    expect(slugs).toEqual(['chess', 'gomoku', 'othello', 'snake', 'xiangqi']);
     const playerIds = SEED_ROBOTS.map(r => r.player_id);
     expect(new Set(playerIds).size).toBe(playerIds.length);
     SEED_ROBOTS.forEach(r => {

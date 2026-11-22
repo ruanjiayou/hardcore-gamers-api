@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   createInitialState, legalMoves, gameStatus, inCheck, applyAction, findLegalMove,
   type GameState, type Color, type Board, type PieceType, type Color as C,
-} from '../src/games/international-chess/rules';
+} from '../src/games/chess/rules';
 
 function blankState(turn = ''): GameState {
   return {

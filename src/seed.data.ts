@@ -69,8 +69,8 @@ export const SEED_GAMES: IGame[] = [
     updatedAt: new Date(),
   },
   {
-    _id: 'international-chess',
-    slug: 'international-chess',
+    _id: 'chess',
+    slug: 'chess',
     title: '国际象棋',
     desc: '国际象棋，含王车易位、吃过路兵、兵升变，将死获胜、逼和判和，支持人机对弈。',
     icon: '♞',
@@ -229,7 +229,7 @@ export const SEED_ROBOTS: SeedRobot[] = [
   { user_id: 'robot-user-gomoku', player_id: 'robot-player-gomoku', user_name: '🤖 五子棋大师', game_id: 'gomoku', slug: 'gomoku' },
   { user_id: 'robot-user-xiangqi', player_id: 'robot-player-xiangqi', user_name: '🤖 象棋大师', game_id: 'xiangqi', slug: 'xiangqi' },
   { user_id: 'robot-user-othello', player_id: 'robot-player-othello', user_name: '🤖 黑白棋大师', game_id: 'othello', slug: 'othello' },
-  { user_id: 'robot-user-international-chess', player_id: 'robot-player-international-chess', user_name: '🤖 国际象棋大师', game_id: 'international-chess', slug: 'international-chess' },
+  { user_id: 'robot-user-chess', player_id: 'robot-player-chess', user_name: '🤖 国际象棋大师', game_id: 'chess', slug: 'chess' },
   { user_id: 'robot-user-snake', player_id: 'robot-player-snake', user_name: '🤖 贪吃蛇大师', game_id: 'snake', slug: 'snake' },
 ];
 
