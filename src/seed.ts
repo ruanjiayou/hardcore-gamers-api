@@ -9,11 +9,12 @@
  */
 
 import mongoose from 'mongoose';
-import { MGame, MPlayer, MRoom, MUser } from './models';
+import { MGame, MPlayer, MRoom, MUser, MVoicePack } from './models';
 import config from './config';
-import { SEED_GAMES, SEED_ROBOTS, robotPlayerSeed, officialRoomSeeds } from './seed.data';
+import redis from './utils/redis';
+import { SEED_GAMES, SEED_ROBOTS, SEED_VOICE_PACKS, robotPlayerSeed, officialRoomSeeds } from './seed.data';
 
-export { SEED_GAMES, SEED_ROBOTS };
+export { SEED_GAMES, SEED_ROBOTS, SEED_VOICE_PACKS };
 
 export interface SeedResult {
   inserted: number;
@@ -127,11 +128,46 @@ export async function seedOfficialRooms(): Promise<SeedResult> {
   return { inserted, kept };
 }
 
+/**
+ * 幂等写入语音包：已存在则只同步文件 URL / 权限要求这类配置字段，
+ * 不动运营可能修改的 name/desc/cover。
+ */
+export async function seedVoicePacks(): Promise<SeedResult> {
+  let inserted = 0;
+  let kept = 0;
+  for (const pack of SEED_VOICE_PACKS) {
+    const existing = await MVoicePack.findById(pack._id).lean(true);
+    if (existing) {
+      const patch: Record<string, unknown> = {};
+      if (JSON.stringify(existing.bgm) !== JSON.stringify(pack.bgm)) patch.bgm = pack.bgm;
+      if (JSON.stringify(existing.sfx) !== JSON.stringify(pack.sfx)) patch.sfx = pack.sfx;
+      if (JSON.stringify(existing.games || {}) !== JSON.stringify(pack.games || {})) patch.games = pack.games;
+      if (!!existing.isDefault !== pack.isDefault) patch.isDefault = pack.isDefault;
+      if (!!existing.requirePermission !== pack.requirePermission) patch.requirePermission = pack.requirePermission;
+      if (existing.status !== pack.status) patch.status = pack.status;
+      if (Object.keys(patch).length) {
+        await MVoicePack.updateOne({ _id: pack._id }, { $set: patch });
+      }
+      kept++;
+      continue;
+    }
+    await MVoicePack.updateOne({ _id: pack._id }, { $setOnInsert: pack }, { upsert: true });
+    inserted++;
+  }
+  if (inserted || kept) {
+    // 配置变了要让列表缓存尽快回源
+    await redis.del(config.prefix + 'voice-packs').catch(() => 0);
+    console.log(`🎵 语音包初始化：新增 ${inserted} 个，已存在 ${kept} 个`);
+  }
+  return { inserted, kept };
+}
+
 /** 服务启动时统一初始化 */
 export async function seedAll() {
   await seedGames();
   await seedRobots();
   await seedOfficialRooms();
+  await seedVoicePacks();
 }
 
 // 支持作为脚本单独运行：bun run seed（server 目录下）

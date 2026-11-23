@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import config from '../config';
-import type { IGame, IRoom, IMatch, IUser, IPlayer } from '../types/index';
+import type { IGame, IRoom, IMatch, IUser, IPlayer, IVoicePack } from '../types/index';
 
 mongoose.set('strictQuery', true);
 mongoose.connect(config.mongo_url).catch(err => {
@@ -74,16 +74,43 @@ export const MMatch = mongoose.model<IMatch>('matches', new mongoose.Schema({
   stats: mongoose.SchemaTypes.Mixed, // 
 }, { collection: 'matches', versionKey: false }))
 
-export const MUser = mongoose.model<IUser>('users', new mongoose.Schema({
+const userSchema = new mongoose.Schema<IUser>({
   _id: String,
   name: String,
   pass: String,
   avatar: String,
   email: String,
   phone: String,
+  // 语音包选择/权限：权限位仅由管理端写入，对外通过虚拟字段 hasVoicePackPermission 暴露
+  voice_pack: { type: String, default: 'classic' },
+  voicePackPerm: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
-}, { collection: 'users', versionKey: false, }));
+}, { collection: 'users', versionKey: false, });
+
+/** 虚拟字段：是否有权限使用非默认语音包（不落库，由服务端按权限位 + 配置白名单计算） */
+userSchema.virtual('hasVoicePackPermission').get(function (this: IUser) {
+  return this.voicePackPerm === true;
+});
+
+export const MUser = mongoose.model<IUser>('users', userSchema);
+
+/** 语音包配置：音频文件 URL 由服务端下发，前端只按 URL 加载 */
+export const MVoicePack = mongoose.model<IVoicePack>('voice_packs', new mongoose.Schema({
+  _id: String,
+  name: String,
+  desc: String,
+  cover: String,
+  isDefault: { type: Boolean, default: false },
+  requirePermission: { type: Boolean, default: true },
+  bgm: [{ _id: false, url: String, label: String }],
+  sfx: mongoose.SchemaTypes.Mixed,
+  // 按游戏区分的音频：{ [gameId]: { bgm?: [...], sfx?: {...} } }
+  games: mongoose.SchemaTypes.Mixed,
+  status: { type: Number, default: 1 },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now },
+}, { collection: 'voice_packs', versionKey: false }));
 
 export const MPlayer = mongoose.model<IPlayer & { room_id: string }>('players', new mongoose.Schema({
   _id: String,
@@ -113,4 +140,5 @@ export default {
   MRoom,
   MMatch,
   MPlayer,
+  MVoicePack,
 }

@@ -15,6 +15,7 @@ import redis from './utils/redis'
 
 import gameController from './controller/game'
 import oauthController from './controller/oauth'
+import voicePackController from './controller/voicePack'
 import config from './config';
 import { userService } from './services/UserService';
 import { seedAll } from './seed';
@@ -64,6 +65,7 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/games', gameController)
 app.use('/api/oauth', oauthController)
+app.use('/api/voice-packs', voicePackController)
 app.post('/api/test', (req, res) => {
   console.log(req.body, typeof req.body)
   res.end();

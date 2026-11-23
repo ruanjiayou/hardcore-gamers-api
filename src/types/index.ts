@@ -101,6 +101,37 @@ export interface IUser {
   pass: string;
   email: string;
   phone: string;
+  /** 已选语音包 id（缺省 classic） */
+  voice_pack?: string;
+  /** 是否可使用需要权限的语音包；管理端置位，服务端再算成虚拟字段下发 */
+  voicePackPerm?: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** 单个游戏在一套语音包里的音频配置；未配置的键回退到包级通用配置 */
+export interface IGameAudio {
+  bgm?: { url: string; label?: string }[];
+  sfx?: Record<string, string>;
+}
+
+/** 语音包：一份配置引用若干音频文件 URL，由前端按 URL 加载播放 */
+export interface IVoicePack {
+  _id: string;
+  name: string;
+  desc: string;
+  cover?: string;
+  /** 默认包：所有玩家（含游客）都可用 */
+  isDefault: boolean;
+  /** 需要权限：无权限玩家只能用默认包 */
+  requirePermission: boolean;
+  /** 包级通用背景音乐（游戏未单独配置时使用），可多首循环播放 */
+  bgm: { url: string; label?: string }[];
+  /** 包级通用音效：click/win/lose 等；游戏未单独配置时使用 */
+  sfx: Record<string, string>;
+  /** 按游戏区分的音频：key 为 game_id / slug，例如 gomoku、xiangqi、2048 */
+  games?: Record<string, IGameAudio>;
+  status: number; // 1 启用
   createdAt: Date;
   updatedAt: Date;
 }

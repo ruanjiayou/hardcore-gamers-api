@@ -102,10 +102,32 @@ describe('离开房间流转', () => {
     expect(resolveLeaveAction(room, 'p9').action).toBe('blocked');
   });
 
-  test('自建房房主离开即解散', () => {
+  test('自建房房主离开：自动转让给非人机玩家', () => {
     const room = {
       owner_id: 'p1',
-      members: [human('p1'), human('p2'), robot('r1')],
+      members: [human('p1'), robot('r1'), human('p2'), human('p3', 'viewer')],
+    };
+    const d = resolveLeaveAction(room, 'p1');
+    expect(d.action).toBe('leave');
+    if (d.action === 'leave') {
+      // 跳过人机与观战者，转让给真人对战玩家 p2
+      expect(d.transferOwnerTo).toBe('p2');
+      expect(d.reset).toBe(false);
+    }
+  });
+
+  test('自建房房主离开且只剩人机：解散房间（人机自动离开）', () => {
+    const room = {
+      owner_id: 'p1',
+      members: [human('p1'), robot('r1'), robot('r2')],
+    };
+    expect(resolveLeaveAction(room, 'p1')).toEqual({ action: 'destroy' });
+  });
+
+  test('自建房房主离开但只剩观战者：解散房间', () => {
+    const room = {
+      owner_id: 'p1',
+      members: [human('p1'), human('v1', 'viewer'), robot('r1')],
     };
     expect(resolveLeaveAction(room, 'p1')).toEqual({ action: 'destroy' });
   });

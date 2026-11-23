@@ -5,7 +5,7 @@
  */
 
 import { GameGenre, PlayerType, PlayerState, RoomStatus } from './constant';
-import type { IGame, IRoom } from './types';
+import type { IGame, IRoom, IVoicePack } from './types';
 
 export const SEED_GAMES: IGame[] = [
   {
@@ -254,4 +254,81 @@ export function robotPlayerSeed(robot: SeedRobot) {
     createdAt: new Date(),
     updatedAt: new Date(),
   };
+}
+
+/**
+ * 语音包种子：配置只引用音频文件 URL，文件自托管在 server/public/audio/ 下，
+ * 前端按 URL 加载播放。素材均为 OpenGameArt CC0（可商用、无需署名）。
+ * - 目录约定：audio/<包>/common/ 放通用 BGM 与 click/win/lose；
+ *   audio/<包>/<gameId>/{move,collect}.mp3 是该游戏专属操作音。
+ * - 每套语音包在 7 个游戏上各有不同的 move/collect 音效，由下方 games 字段配置。
+ * - classic：默认包，所有玩家（含游客）可用
+ * - ambient / arcade：需权限，权限位在 users.voicePackPerm 或 etcd voice_pack_allowlist
+ */
+export const SEED_VOICE_PACKS: IVoicePack[] = [
+  {
+    _id: 'classic',
+    name: '经典',
+    desc: '轻快的默认音效，七个游戏各有专属操作音',
+    cover: '🎵',
+    isDefault: true,
+    requirePermission: false,
+    bgm: [{ url: '/audio/classic/common/bgm.mp3', label: '经典主题' }],
+    sfx: {
+      click: '/audio/classic/common/click.mp3',
+      win: '/audio/classic/common/win.mp3',
+      lose: '/audio/classic/common/lose.mp3',
+    },
+    status: 1,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  },
+  {
+    _id: 'ambient',
+    name: '深空',
+    desc: '空灵的环境氛围，七个游戏各有柔和提示音',
+    cover: '🌌',
+    isDefault: false,
+    requirePermission: true,
+    bgm: [
+      { url: '/audio/ambient/common/bgm.mp3', label: '星域' },
+      { url: '/audio/ambient/common/bgm2.mp3', label: '漂浮' },
+    ],
+    sfx: {
+      click: '/audio/ambient/common/click.mp3',
+      win: '/audio/ambient/common/win.mp3',
+      lose: '/audio/ambient/common/lose.mp3',
+    },
+    status: 1,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  },
+  {
+    _id: 'arcade',
+    name: '街机',
+    desc: '明快的电子节奏，七个游戏各有清脆操作音',
+    cover: '🕹️',
+    isDefault: false,
+    requirePermission: true,
+    bgm: [{ url: '/audio/arcade/common/bgm.mp3', label: '霓虹' }],
+    sfx: {
+      click: '/audio/arcade/common/click.mp3',
+      win: '/audio/arcade/common/win.mp3',
+      lose: '/audio/arcade/common/lose.mp3',
+    },
+    status: 1,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  },
+];
+
+/** 每个包的 7 个游戏各自的操作音；sfx 按 key 覆盖包级通用配置 */
+const AUDIO_GAME_IDS = ['gomoku', 'xiangqi', 'othello', 'chess', '2048', 'tetris', 'snake'];
+for (const pack of SEED_VOICE_PACKS) {
+  pack.games = Object.fromEntries(AUDIO_GAME_IDS.map(game => [game, {
+    sfx: {
+      move: `/audio/${pack._id}/${game}/move.mp3`,
+      collect: `/audio/${pack._id}/${game}/collect.mp3`,
+    },
+  }]));
 }

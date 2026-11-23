@@ -5,7 +5,7 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "dev": "NODE_ENV=test bun run --hot src/index.ts",
+    "work": "NODE_ENV=work etcd_url=http://100.125.39.89:2379 bun run --hot src/index.ts",
     "start": "NODE_ENV=test bun run src/index.ts",
     "build": "bun build --target bun src/index.ts --outdir dist",
     "seed": "NODE_ENV=test bun run src/seed.ts",

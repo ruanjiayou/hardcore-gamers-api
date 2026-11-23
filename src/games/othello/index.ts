@@ -38,13 +38,13 @@ export default class Othello {
     }
     const color: OthelloColor = me.role === 'white' ? 'white' : 'black';
 
-    // 跳过回合：仅当本方确实无合法落子时允许，且对方必须有棋可下（否则应终局）
+    // 跳过回合：仅当本方确实无合法落子时允许
     if (to[0] === -1 && to[1] === -1) {
       if (hasLegalMove(board, color)) {
         return { success: false, gameover: false, data: null };
       }
-      const foeCanMove = hasLegalMove(board, opponent(color));
-      if (!foeCanMove) {
+      const { endGame, nextTurn } = this.decidePassTurn(board, color, match.players);
+      if (endGame) {
         // 双方都无法落子 → 终局，按子数判胜
         const winnerId = this.settleWinner(match, board);
         curr_state.curr_turn = '';
@@ -58,8 +58,9 @@ export default class Othello {
           data: { curr_turn: player_id, next_turn: '', to, pass: true, color, winner: winnerId },
         };
       }
-      // 合法跳过：回合仍交还给自己（对手也无棋时上面已终局）
-      curr_state.curr_turn = player_id;
+      // 合法跳过：回合交给对方。旧实现把 curr_turn 留给自己，导致
+      // 玩家反复被要求跳过 / 机器人 pass 后因 isMine 不再触发落子，对局卡死不判胜负。
+      curr_state.curr_turn = nextTurn;
       await MMatch.updateOne({ _id: match._id }, {
         $set: { curr_state, updatedAt: new Date() },
         $push: { movements: { ...movement, timestamp: Date.now() } },
@@ -67,7 +68,7 @@ export default class Othello {
       return {
         success: true,
         gameover: false,
-        data: { curr_turn: player_id, next_turn: player_id, to, pass: true, color },
+        data: { curr_turn: player_id, next_turn: nextTurn, to, pass: true, color },
       };
     }
 
@@ -113,6 +114,18 @@ export default class Othello {
         ...(gameover ? { winner } : {}),
       },
     };
+  }
+
+  /**
+   * 我方无子可落、请求跳过时的回合决策（纯函数，便于测试）。
+   * - 对方也无棋 → 终局，nextTurn 为空（双方都无合法落子）
+   * - 对方有棋 → 回合交给对方
+   */
+  static decidePassTurn(board: Board, color: OthelloColor, players: IPlayer[]) {
+    const foe = opponent(color);
+    const endGame = !hasLegalMove(board, foe);
+    const nextTurn = endGame ? '' : (players.find(p => p.role === foe)?._id ?? '');
+    return { endGame, nextTurn };
   }
 
   /** 按最终子数判胜，返回胜者 player_id；相等返回 ''（平局） */

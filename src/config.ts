@@ -31,6 +31,8 @@ export interface AppConfig {
   totalBudgetMin: number;
   /** 每步限额（秒） */
   stepLimitSec: number;
+  /** 语音包权限白名单（etcd 可配）：这些 user_id 无需在库里置位也能用非默认语音包 */
+  voice_pack_allowlist: string[];
 }
 
 /** 默认 JSON：字段齐全、值为空字符串 / 0 / false，仅用于类型提示与兜底 */
@@ -44,6 +46,7 @@ const defaultConfig: AppConfig = {
   prefix: '',
   expires: 0,
   max_robot_per_room: 0,
+  voice_pack_allowlist: [],
   enabled: false,
   totalBudgetMin: 0,
   stepLimitSec: 0,
@@ -74,6 +77,7 @@ async function loadConfig() {
     }
     Object.assign(config, JSON.parse(raw));
     console.log(`[config] 已从 etcd 加载 ${env}/${CONFIG_KEY}`);
+    console.log(JSON.stringify(config))
   } catch (err) {
     loaded = true;
     // etcd 不可用时保持默认值，避免整个服务启动失败

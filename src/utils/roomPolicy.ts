@@ -97,21 +97,26 @@ export function resolveLeaveAction(room: PolicyRoom, player_id: string): LeaveDe
 
   const remain = (room.members || []).filter(m => m._id !== player_id)
   const hasHuman = remain.some(m => m.player_type !== constant.PLAYER.TYPE.robot)
+  // 可接手房主的真人对战玩家：跳过人机与观战者（观战者无法开局，接手会把房间卡死）
+  const nextHumanOwner = remain.find(m =>
+    m.player_type !== constant.PLAYER.TYPE.robot &&
+    m.member_type === constant.MEMBER.TYPE.player
+  )?._id
 
   if (room.official) {
     // 官方房只退出不解散。房主离开 → 转让给下一位真人对战玩家；无真人 → 空桌重置。
-    const nextOwner = player_id === room.owner_id
-      ? remain.find(m =>
-        m.player_type !== constant.PLAYER.TYPE.robot &&
-        m.member_type === constant.MEMBER.TYPE.player
-      )?._id ?? ''
-      : undefined
+    const nextOwner = player_id === room.owner_id ? nextHumanOwner ?? '' : undefined
     return { action: 'leave', transferOwnerTo: nextOwner, reset: !hasHuman }
   }
 
-  // 自建房：房主离开即解散
-  if (player_id === room.owner_id) return { action: 'destroy' }
+  // 自建房房主离开：自动转让给非人机玩家；没有真人接手（只剩人机）则解散，人机随之被回收。
+  // 不再要求房主手动转让或一键解散——房主走人后房间不该卡在无人认领状态。
+  if (player_id === room.owner_id) {
+    return nextHumanOwner
+      ? { action: 'leave', transferOwnerTo: nextHumanOwner, reset: false }
+      : { action: 'destroy' }
+  }
 
-  // 普通成员离开：无真人残留时回收机器人、清空成员
+  // 普通成员离开：无真人残留时回收机器人、清空成员（人机自动离开）
   return { action: 'leave', reset: !hasHuman }
 }
