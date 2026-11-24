@@ -281,8 +281,10 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       if (!arena.match_id) return;
       const payload = { room_id: room._id, timestamp: Date.now() };
       // 已经是进行中的对局：把刚进来的玩家加进去（开局时才建的局已包含他）
+      // 必须 await：addPlayer 会把加入者回写进 match.players，
+      // 回写没落库前客户端发的转向指令会被判成"不在局中"而丢弃
       if (!arena.started && before?.status === constant.ROOM.STATUS.playing) {
-        snakeRuntimeService.addPlayer(arena.match_id, player_id, nickname);
+        await snakeRuntimeService.addPlayer(arena.match_id, player_id, nickname);
       }
       io.to(`room:${room._id}`).emit('room:game-start', { ...payload, match_id: arena.match_id });
     } catch (error) {

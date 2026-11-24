@@ -4,10 +4,23 @@ import {
   SNAKE_BOOST_MS,
   SNAKE_BOOST_MULT,
   SNAKE_BODY_LENGTH,
+  SNAKE_CORPSE_FIELD_CAP,
+  SNAKE_CORPSE_MIN,
+  SNAKE_CORPSE_RATIO,
   SNAKE_FOOD_COUNT,
   SNAKE_FOOD_SCORE,
-  SNAKE_GROW_PER_FOOD,
+  SNAKE_FOOD_TIERS,
+  SNAKE_GROW_PER_SCORE,
   SNAKE_INVINCIBLE_MS,
+  SNAKE_ITEM_COUNT,
+  SNAKE_KIND_CORPSE,
+  SNAKE_KIND_FOOD,
+  SNAKE_KIND_LIGHTNING,
+  SNAKE_KIND_MAGNET,
+  SNAKE_LIGHTNING_MS,
+  SNAKE_LIGHTNING_MULT,
+  SNAKE_MAGNET_MS,
+  SNAKE_MAGNET_RADIUS,
   SNAKE_MIN_TURN_RADIUS,
   SNAKE_PATH_STEP,
   SNAKE_RADIUS,
@@ -22,8 +35,11 @@ import {
   respawnSnake,
   snakeScores,
   snakeSpine,
+  spawnFood,
+  spawnItem,
   steerSnake,
   stepSnake,
+  type SnakeFoodItem,
   type SnakePlayerState,
   type SnakeState,
 } from '../src/games/snake/rules';
@@ -78,8 +94,11 @@ function snakeFromPath(id: string, points: [number, number][], length?: number):
     invincibleUntil: 0,
     boostUntil: 0,
     boostReadyAt: 0,
+    magnetUntil: 0,
+    lightningUntil: 0,
     respawnAt: 0,
     respawns: 0,
+    team: '',
   };
 }
 
@@ -89,24 +108,37 @@ const straight = (id: string, x: number, y: number, length = SNAKE_BODY_LENGTH) 
 
 function makeState(
   snakes: SnakePlayerState[],
-  food: [number, number][] = [],
-  opts: { variant?: 'endless' | 'multi'; w?: number; h?: number } = {},
+  food: SnakeFoodItem[] = [],
+  opts: { variant?: 'endless' | 'team'; w?: number; h?: number } = {},
 ): SnakeState {
   return {
     w: opts.w ?? SNAKE_WORLD_W,
     h: opts.h ?? SNAKE_WORLD_H,
     tick: 0,
-    food: food.map(([x, y]) => [x, y] as [number, number]),
+    food: food.map(f => ({ ...f })),
     snakes,
     status: 'playing',
     winner: '',
-    variant: opts.variant ?? 'multi',
+    variant: opts.variant ?? 'team',
   };
 }
 
+/** 造一颗普通食物 */
+const foodAt = (x: number, y: number, value = SNAKE_FOOD_SCORE): SnakeFoodItem => ({
+  x, y,
+  r: value >= 20 ? 11 : (value >= 8 ? 8 : 5),
+  v: value,
+  k: SNAKE_KIND_FOOD,
+});
+
+/** 造一个道具 */
+const itemAt = (x: number, y: number, kind: number): SnakeFoodItem => ({
+  x, y, r: 9, v: 0, k: kind,
+});
+
 describe('贪吃蛇规则（连续像素）', () => {
   test('建局：世界远大于视口、蛇在界内且留出跑道、食物数量正确且不压身', () => {
-    const state = createSnakeState(['p1', 'p2', 'p3'], { foodCount: 20 });
+    const state = createSnakeState(['p1', 'p2', 'p3'], { foodCount: 20, itemCount: 0 });
     expect(state.w).toBe(SNAKE_WORLD_W);
     expect(state.h).toBe(SNAKE_WORLD_H);
     expect(state.snakes.length).toBe(3);
@@ -121,10 +153,10 @@ describe('贪吃蛇规则（连续像素）', () => {
       expect(s.path[0][0]).toBeCloseTo(s.x, 5);
     }
     expect(state.food.length).toBe(20);
-    for (const [fx, fy] of state.food) {
+    for (const f of state.food) {
       for (const s of state.snakes) {
         for (let i = 0; i < s.path.length; i += 3) {
-          expect(Math.hypot(s.path[i][0] - fx, s.path[i][1] - fy)).toBeGreaterThan(SNAKE_RADIUS);
+          expect(Math.hypot(s.path[i][0] - f.x, s.path[i][1] - f.y)).toBeGreaterThan(SNAKE_RADIUS);
         }
       }
     }
@@ -157,15 +189,15 @@ describe('贪吃蛇规则（连续像素）', () => {
   });
 
   test('吃食物：加分、按像素变长、吃掉的食物消失并补一颗', () => {
-    const state = makeState([straight('p1', 300, 300)], [[320, 300]]);
+    const state = makeState([straight('p1', 300, 300)], [foodAt(320, 300)]);
     state.variant = 'endless';
     const before = state.food.length;
     const res = stepSnake(state, { dt: 0.15, now: 0 });
     expect(res.ate).toEqual(['p1']);
     expect(state.snakes[0].score).toBe(SNAKE_FOOD_SCORE);
-    expect(state.snakes[0].length).toBe(SNAKE_BODY_LENGTH + SNAKE_GROW_PER_FOOD);
+    expect(state.snakes[0].length).toBe(SNAKE_BODY_LENGTH + SNAKE_FOOD_SCORE * SNAKE_GROW_PER_SCORE);
     expect(state.food.length).toBe(before); // 吃一颗补一颗
-    expect(state.food.some(([x, y]) => x === 320 && y === 300)).toBe(false);
+    expect(state.food.some(f => f.x === 320 && f.y === 300)).toBe(false);
   });
 
   test('撞墙按半径判定', () => {
@@ -335,6 +367,241 @@ describe('贪吃蛇规则（连续像素）', () => {
 
   test('默认食物数量常量与建局一致', () => {
     const state = createSnakeState(['p1']);
-    expect(state.food.length).toBe(SNAKE_FOOD_COUNT);
+    const foods = state.food.filter(f => f.k === SNAKE_KIND_FOOD);
+    const items = state.food.filter(f => f.k !== SNAKE_KIND_FOOD);
+    expect(foods.length).toBe(SNAKE_FOOD_COUNT);
+    expect(items.length).toBe(SNAKE_ITEM_COUNT);
+  });
+});
+
+describe('贪吃蛇团队模式（6 队 × 每队 5 人）', () => {
+  test('建局：队伍映射写入每条蛇，同队同色', () => {
+    const state = createSnakeState(
+      ['p1', 'p2', 'p3'],
+      { variant: 'team', teams: { p1: '红队', p2: '红队', p3: '蓝队' } },
+    );
+    expect(state.variant).toBe('team');
+    expect(state.snakes.find(s => s.id === 'p1')?.team).toBe('红队');
+    expect(state.snakes.find(s => s.id === 'p2')?.team).toBe('红队');
+    expect(state.snakes.find(s => s.id === 'p3')?.team).toBe('蓝队');
+  });
+
+  test('队友之间不互相碰撞致死（撞到队友身体仍存活）', () => {
+    // p1 头在 300,300 朝右；p2（队友）身体横在 p1 正前方
+    const p1 = straight('p1', 300, 300, 120);
+    const p2 = straight('p2', 360, 300, 120);
+    p2.team = '红队';
+    p1.team = '红队';
+    const state = makeState([p1, p2], [], { variant: 'team' });
+    const result = stepSnake(state, { dt: 0.05, now: 1000 });
+    expect(result.died).not.toContain('p1');
+    expect(state.snakes.find(s => s.id === 'p1')?.alive).toBe(true);
+  });
+
+  test('异队之间照常碰撞致死', () => {
+    const p1 = straight('p1', 300, 300, 120);
+    const p2 = straight('p2', 360, 300, 120);
+    p1.team = '红队';
+    p2.team = '蓝队';
+    const state = makeState([p1, p2], [], { variant: 'team' });
+    const result = stepSnake(state, { dt: 0.05, now: 1000 });
+    expect(result.died).toContain('p1');
+  });
+
+  test('一支队伍全员出局即淘汰，只剩一队时该队获胜', () => {
+    const a1 = straight('a1', 300, 300);
+    const a2 = straight('a2', 400, 300);
+    const b1 = straight('b1', 900, 900);
+    a1.team = '红队'; a2.team = '红队'; b1.team = '蓝队';
+    const state = makeState([a1, a2, b1], [], { variant: 'team' });
+    // 红队两人直接判死（模拟被撞/出局），蓝队还活着
+    a1.alive = false;
+    a2.alive = false;
+    const result = stepSnake(state, { dt: 0.05, now: 1000 });
+    expect(result.over).toBe(true);
+    expect(state.status).toBe('over');
+    expect(state.winner).toBe('b1');
+  });
+
+  test('队伍总积分：队内成员最高分之和', () => {
+    const state = makeState(
+      [straight('a1', 300, 300), straight('a2', 400, 300), straight('b1', 900, 900)],
+      [],
+      { variant: 'team' },
+    );
+    state.snakes[0].team = '红队'; state.snakes[0].score = 30; state.snakes[0].best = 30;
+    state.snakes[1].team = '红队'; state.snakes[1].score = 20; state.snakes[1].best = 20;
+    state.snakes[2].team = '蓝队'; state.snakes[2].score = 10; state.snakes[2].best = 10;
+    const result = stepSnake(state, { dt: 0.05, now: 1000 });
+    expect(result.over).toBe(false);
+    expect(state.teamScores).toEqual({ 红队: 50, 蓝队: 10 });
+  });
+});
+
+describe('贪吃蛇：食物分档', () => {
+  test('小的数量多、大的数量少：按权重抽样，三档数量递减', () => {
+    // 大世界避免"位置放不下"导致的抽样偏差
+    const state = createSnakeState(['p1'], { width: 9000, height: 7000, foodCount: 0, itemCount: 0 });
+    for (let i = 0; i < 1500; i++) spawnFood(state);
+    const foods = state.food.filter(f => f.k === SNAKE_KIND_FOOD);
+    const counts = SNAKE_FOOD_TIERS.map(t => foods.filter(f => f.v === t.value).length);
+    // 小档最多、大档最少
+    expect(counts[0]).toBeGreaterThan(counts[1]);
+    expect(counts[1]).toBeGreaterThan(counts[2]);
+    // 大档占比接近 12% 的权重
+    expect(counts[2] / foods.length).toBeGreaterThan(0.08);
+    expect(counts[2] / foods.length).toBeLessThan(0.16);
+  });
+
+  test('每颗食物的半径与分值对应档位（大食物更值钱也更大）', () => {
+    const state = createSnakeState(['p1'], { foodCount: 0, itemCount: 0 });
+    for (let i = 0; i < 200; i++) spawnFood(state);
+    for (const f of state.food) {
+      const tier = SNAKE_FOOD_TIERS.find(t => t.value === f.v)!;
+      expect(tier).toBeTruthy();
+      expect(f.r).toBe(tier.radius);
+    }
+  });
+
+  test('大食物收益更高：加分更多、身体更长', () => {
+    const small = makeState([straight('p1', 300, 300)], [foodAt(320, 300, 5)], { variant: 'endless' });
+    const big = makeState([straight('p1', 300, 300)], [foodAt(320, 300, 30)], { variant: 'endless' });
+    stepSnake(small, { dt: 0.15, now: 0 });
+    stepSnake(big, { dt: 0.15, now: 0 });
+    expect(big.snakes[0].score).toBeGreaterThan(small.snakes[0].score);
+    expect(big.snakes[0].length).toBeGreaterThan(small.snakes[0].length);
+  });
+});
+
+describe('贪吃蛇：道具（磁铁 / 闪电）', () => {
+  test('道具不加长度、不加分，只给特殊效果', () => {
+    const state = makeState(
+      [straight('p1', 300, 300)],
+      [itemAt(320, 300, SNAKE_KIND_MAGNET), itemAt(340, 300, SNAKE_KIND_LIGHTNING)],
+      { variant: 'endless' },
+    );
+    const now = 5_000;
+    stepSnake(state, { dt: 0.15, now });
+    const s = state.snakes[0];
+    expect(s.score).toBe(0);
+    expect(s.length).toBe(SNAKE_BODY_LENGTH);
+    expect(s.magnetUntil).toBe(now + SNAKE_MAGNET_MS);
+    expect(s.lightningUntil).toBe(now + SNAKE_LIGHTNING_MS);
+    // 道具吃完要补位（否则场上道具会越来越少）：数量不变，类型随机
+    const items = state.food.filter(f => f.k === SNAKE_KIND_MAGNET || f.k === SNAKE_KIND_LIGHTNING);
+    expect(items.length).toBe(2);
+  });
+
+  test('磁铁：半径内的食物被拉向蛇头，半径外的不动', () => {
+    const state = makeState(
+      [straight('p1', 300, 300)],
+      [foodAt(400, 300), foodAt(700, 300)],
+      { variant: 'endless' },
+    );
+    state.snakes[0].magnetUntil = 10_000;
+    const near = state.food[0];
+    const far = state.food[1];
+    const nearX0 = near.x;
+    const farX0 = far.x;
+    stepSnake(state, { dt: 0.05, now: 9_999 });
+    expect(near.x).toBeLessThan(nearX0);          // 被拉过来
+    expect(far.x).toBe(farX0);                     // 太远，不受影响
+    expect(Math.hypot(near.x - state.snakes[0].x, near.y - state.snakes[0].y))
+      .toBeLessThan(SNAKE_MAGNET_RADIUS);
+  });
+
+  test('闪电：速度小幅提升 1.35 倍', () => {
+    const build = () => {
+      const st = makeState([straight('p1', 500, 500)], [], { variant: 'endless' });
+      return st;
+    };
+    const now = 10_000;
+    const normal = build();
+    stepSnake(normal, { dt: 0.1, now });
+    const zapped = build();
+    zapped.snakes[0].lightningUntil = now + 5_000;
+    stepSnake(zapped, { dt: 0.1, now });
+    const dNormal = normal.snakes[0].x - 500;
+    const dZapped = zapped.snakes[0].x - 500;
+    expect(dZapped / dNormal).toBeCloseTo(SNAKE_LIGHTNING_MULT, 2);
+  });
+
+  test('主动加速优先于闪电（不叠加倍率）', () => {
+    const build = () => makeState([straight('p1', 500, 500)], [], { variant: 'endless' });
+    const now = 10_000;
+    const both = build();
+    both.snakes[0].lightningUntil = now + 5_000;
+    both.snakes[0].boostUntil = now + 5_000;
+    stepSnake(both, { dt: 0.1, now });
+    const normal = build();
+    stepSnake(normal, { dt: 0.1, now });
+    const dBoth = both.snakes[0].x - 500;
+    const dNormal = normal.snakes[0].x - 500;
+    expect(dBoth / dNormal).toBeCloseTo(SNAKE_BOOST_MULT, 2);
+  });
+});
+
+describe('贪吃蛇：尸体残骸与能量收敛', () => {
+  test('蛇死后留下残骸：数量随身长增长、总价值 = 分数 × 0.9', () => {
+    const state = makeState([straight('p1', SNAKE_WORLD_W - 30, 300)], [], { variant: 'endless' });
+    const s = state.snakes[0];
+    s.score = 200;
+    s.best = 200;
+    s.length = 300;
+    stepSnake(state, { dt: 0.25, now: 0 });
+    expect(s.alive).toBe(false);
+
+    const corpses = state.food.filter(f => f.k === SNAKE_KIND_CORPSE);
+    expect(corpses.length).toBeGreaterThanOrEqual(SNAKE_CORPSE_MIN);
+    const total = corpses.reduce((a, f) => a + f.v, 0);
+    // 严格不变量：残骸总价值不超过 分数 × ρ
+    expect(total).toBeLessThanOrEqual(Math.floor(200 * SNAKE_CORPSE_RATIO));
+    // 也基本贴近（均摊取整误差在 ±10% 内）
+    expect(total).toBeGreaterThan(Math.floor(200 * SNAKE_CORPSE_RATIO) * 0.9);
+  });
+
+  test('蛇越大 → 尸体越多、越值钱', () => {
+    const build = (len: number) => {
+      const st = makeState([straight('p1', SNAKE_WORLD_W - 30, 300)], [], { variant: 'endless' });
+      st.snakes[0].score = 300;
+      st.snakes[0].length = len;
+      stepSnake(st, { dt: 0.25, now: 0 });
+      const cs = st.food.filter(f => f.k === SNAKE_KIND_CORPSE);
+      return { count: cs.length, total: cs.reduce((a, f) => a + f.v, 0) };
+    };
+    const small = build(120);
+    const big = build(800);
+    expect(big.count).toBeGreaterThan(small.count);
+    expect(big.total).toBeGreaterThan(small.total);
+  });
+
+  test('残骸被吃光后不补位（不复制能量，否则总能量会发散）', () => {
+    const state = makeState([straight('p1', 300, 300)], [], { variant: 'endless' });
+    state.snakes[0].length = 200;
+    // 手动放一颗残骸在蛇头前方
+    state.food.push({ x: 320, y: 300, r: 8, v: 10, k: SNAKE_KIND_CORPSE });
+    const before = state.food.length;
+    stepSnake(state, { dt: 0.15, now: 0 });
+    expect(state.food.length).toBe(before - 1); // 吃完就没了，不补
+    expect(state.snakes[0].score).toBe(10);
+  });
+
+  test('场上残骸总价值有硬顶（世界总能量不会无限膨胀）', () => {
+    const state = makeState([straight('p1', SNAKE_WORLD_W - 30, 300)], [], { variant: 'endless' });
+    // 造一条巨蛇并给巨额分数，残骸总价值仍不得超过场上硬顶
+    state.snakes[0].score = 999_999;
+    state.snakes[0].length = 5000;
+    stepSnake(state, { dt: 0.25, now: 0 });
+    const total = state.food.filter(f => f.k === SNAKE_KIND_CORPSE).reduce((a, f) => a + f.v, 0);
+    expect(total).toBeLessThanOrEqual(SNAKE_CORPSE_FIELD_CAP);
+    // 且远小于原始分数（ρ ≤ 1 的收敛保证）
+    expect(total).toBeLessThan(999_999);
+  });
+
+  test('收敛性：ρ = 0.9 时世界总放大倍数为 ρ/(1-ρ) = 9', () => {
+    // 一代衰减 (1-ρ)，几何级数求和
+    const rho = SNAKE_CORPSE_RATIO;
+    expect(rho).toBeLessThan(1);
+    expect(rho / (1 - rho)).toBeCloseTo(9, 5);
   });
 });

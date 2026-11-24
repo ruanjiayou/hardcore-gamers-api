@@ -1,13 +1,15 @@
 import { IMatch, IMember, IPlayer, IRoom } from "../../types";
 import { isSnakeAngle } from "./rules";
 import { snakeRuntimeService } from "../../services/SnakeRuntimeService";
+import { SNAKE_TEAM_NAMES, SNAKE_TEAM_SIZE } from "./teams";
 
 /**
  * 贪吃蛇（一个游戏两种玩法，都是房间制 + 服务端权威实时推进）。
  *
- * - endless（无尽挑战，1–6 人同图）：进房即开局，死亡后停在「已出局」弹框等玩家选择
+ * - endless（无尽挑战，1–10 人同图）：进房即开局，死亡后停在「已出局」弹框等玩家选择
  *   （重生 / 退出）；重生在空白处随机复活并带 3s 无敌。房间没人时按各玩家最高分结算，分榜 key = endless。
- * - multi（多人对战，2–4 人）：淘汰制，活到最后者获胜，分榜 key = multi。
+ * - team（团队模式，最多 6 队 × 每队 5 人）：队友之间不互相碰撞致死，可以互相掩护；
+ *   一支队伍全员出局即淘汰，只剩一队时该队获胜，分榜 key = team。
  *
  * 客户端只发三类指令（连续像素移动，没有格子/四方向）：
  * - movement.angle：期望朝向（弧度，0 = 向右）；服务端按"最小转弯半径 26px"推导的最大角速度追过去，
@@ -23,7 +25,7 @@ export default class GameSnake {
 
   /** 两种玩法都由服务端 tick 推进 */
   static isRealtimeVariant(_variant?: string) {
-    return _variant === 'multi' || _variant === 'endless' || !_variant;
+    return _variant === 'team' || _variant === 'endless' || !_variant;
   }
 
   static getInitState(_player_id?: string) {
@@ -34,13 +36,49 @@ export default class GameSnake {
     };
   }
 
-  /** 每个玩家一条蛇，角色统一 snake（座位由分配顺序决定）。 */
-  static assignRole(_room: IRoom, player: IMember) {
+  /**
+   * 每个玩家一条蛇，角色统一 snake。
+   * 团队模式额外分配队伍：按"当前人数最少的队伍"均衡分队，队满则不入座。
+   */
+  static assignRole(room: IRoom, player: IMember) {
     player.role = 'snake';
+    if (room?.settings?.variant === 'team') {
+      player.team = GameSnake.pickTeam(room);
+    }
+  }
+
+  /**
+   * 均衡分队：挑人数最少且未满的队伍。
+   * 房间成员里已带 team 的算作该队人数；无队可选时返回空串（该玩家按无队伍处理）。
+   */
+  static pickTeam(room: IRoom): string {
+    const members = (room?.members || []).filter((m: any) => m.member_type === 'player' && m.team);
+    const counts = new Map<string, number>();
+    for (const name of SNAKE_TEAM_NAMES) counts.set(name, 0);
+    for (const m of members as any[]) {
+      if (counts.has(m.team)) counts.set(m.team, (counts.get(m.team) || 0) + 1);
+    }
+    let best = '';
+    let bestCount = Number.MAX_SAFE_INTEGER;
+    for (const name of SNAKE_TEAM_NAMES) {
+      const c = counts.get(name) || 0;
+      if (c >= SNAKE_TEAM_SIZE) continue;
+      if (c < bestCount) {
+        bestCount = c;
+        best = name;
+      }
+    }
+    return best;
   }
 
   static assignRoles(players: IPlayer[]) {
-    return players.map(p => ({ _id: p._id, role: 'snake', score: 0, is_winner: false }));
+    return players.map(p => ({
+      _id: p._id,
+      role: 'snake',
+      team: (p as any).team || '',
+      score: 0,
+      is_winner: false,
+    }));
   }
 
   static isLegalMove() { }
@@ -50,8 +88,14 @@ export default class GameSnake {
     movement: { player_id: string; angle?: number; boost?: boolean; respawn?: boolean },
   ) {
     const { player_id } = movement;
-    const me = match.players.find(p => p._id === player_id);
-    if (!me) {
+    // 准入判定以服务端运行时为准（唯一权威）：
+    // 无尽竞技房允许中途加入，新玩家的蛇只存在于运行时内存态，
+    // 开局时写下的 match.players 名单里没有他 —— 若拿旧名单判定，
+    // 他会被当成"不在局中"，转向/加速指令被静默丢弃，
+    // 表现就是"进了房间却完全控制不了方向"。
+    const inMatch = (match.players || []).some(p => p._id === player_id);
+    const inRuntime = snakeRuntimeService.hasPlayer(match._id, player_id);
+    if (!inMatch && !inRuntime) {
       return { success: false, gameover: false, data: null };
     }
 

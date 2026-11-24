@@ -104,6 +104,12 @@ export function resolveLeaveAction(room: PolicyRoom, player_id: string): LeaveDe
   )?._id
 
   if (room.official) {
+    // 无尽竞技房是常驻房：人机常驻场上陪玩，真人离开只走自己，
+    // 不清场、不回收人机、不结束对局（否则真人一来一回就把陪玩清空了）。
+    if (endlessArena) {
+      const endlessOwner = player_id === room.owner_id ? nextHumanOwner ?? '' : undefined
+      return { action: 'leave', transferOwnerTo: endlessOwner, reset: false }
+    }
     // 官方房只退出不解散。房主离开 → 转让给下一位真人对战玩家；无真人 → 空桌重置。
     const nextOwner = player_id === room.owner_id ? nextHumanOwner ?? '' : undefined
     return { action: 'leave', transferOwnerTo: nextOwner, reset: !hasHuman }
@@ -119,4 +125,60 @@ export function resolveLeaveAction(room: PolicyRoom, player_id: string): LeaveDe
 
   // 普通成员离开：无真人残留时回收机器人、清空成员（人机自动离开）
   return { action: 'leave', reset: !hasHuman }
+}
+
+// ========== 遗留数据清理判定（纯函数，供服务启动自愈与单测共用） ==========
+
+export interface CleanupRoom {
+  _id?: string
+  status?: string
+  match_id?: string
+  members?: { _id: string }[]
+}
+
+export interface CleanupMatch {
+  _id: string
+  room_id?: string
+  status?: string
+}
+
+/**
+ * 玩家的 room_id 是否为悬空指针。
+ * 三种情况都算悬空：
+ * - 房间不存在
+ * - 房间已软删（status=deleted）
+ * - 房间还在，但玩家已不在成员表里（最隐蔽的一种：
+ *   前端进游戏页会跳到这个房间，随后立刻弹出"已离开房间"）
+ */
+export function isDanglingRoomRef(
+  player: { _id: string, room_id?: string },
+  room: CleanupRoom | null | undefined,
+): boolean {
+  if (!player.room_id) return false
+  if (!room) return true
+  if (room.status === constant.ROOM.STATUS.deleted) return true
+  return !(room.members || []).some(m => m._id === player._id)
+}
+
+/**
+ * 对局是否是僵尸（房间已经回等待态 / 已解散 / 不存在，却仍停在 playing）。
+ * 僵尸对局会让房间列表一直显示"对局中"，玩家点进去却玩不了。
+ */
+export function isZombieMatch(
+  match: CleanupMatch,
+  room: CleanupRoom | null | undefined,
+): boolean {
+  if (!room) return true
+  if (room.status === constant.ROOM.STATUS.deleted) return true
+  // 房间的 match_id 与对局对不上：说明房间已经开了新局或已重置
+  return String(room.match_id || '') !== String(match._id)
+}
+
+/**
+ * 房间是否是僵尸（停在 playing，但对局已不在进行中集合里）。
+ */
+export function isZombieRoom(room: CleanupRoom, playingMatchIds: Set<string>): boolean {
+  if (room.status !== constant.ROOM.STATUS.playing) return false
+  if (!room.match_id) return false
+  return !playingMatchIds.has(String(room.match_id))
 }

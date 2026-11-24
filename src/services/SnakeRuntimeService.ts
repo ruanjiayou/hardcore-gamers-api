@@ -4,9 +4,10 @@
  * 职责：对每个进行中的贪吃蛇对局维护一个内存状态，按固定 tick 推进并广播快照。
  * - 服务端权威：方向/加速指令只改内存状态，移动/碰撞/吃食物全在服务端算；
  * - 两种玩法同一套运行时：
- *   · endless（无尽挑战，1–6 人同图）：死亡自动重生（3s 无敌），对局永不结束，
+ *   · endless（无尽挑战，1–10 人同图）：死亡自动重生（3s 无敌），对局永不结束，
  *     直到房间没人/被解散时统一结算（按各玩家历史最高分记 endless 榜）；
- *   · multi（多人对战，2–4 人）：淘汰制，只剩一条或全灭即结束；
+ *   · team（团队模式，最多 6 队 × 每队 5 人）：队友之间不互相碰撞致死，
+ *     一支队伍全员出局即淘汰，只剩一队时该队获胜（记 team 榜）；
  * - 每 10 个 tick 落库一次 curr_state.snake，断线重进能拿到接近实时的局面；
  * - 结束时调用注入的 finish hook（由 index.ts 接到 roomService.gameover），
  *   避免运行时反向依赖 RoomService 造成循环引用。
@@ -27,6 +28,7 @@ import {
   snakeSpine,
   steerSnake as steerState,
   stepSnake,
+  type SnakeFoodItem,
   type SnakeState,
   type SnakeVariant,
 } from '../games/snake/rules';
@@ -66,11 +68,14 @@ export interface SnakeSnapshot {
   radius: number;
   tick: number;
   variant: SnakeVariant;
-  /** 座位表（id + 昵称），客户端据此显示玩家名与头顶标签 */
-  players: { id: string; nickname: string }[];
-  food: [number, number][];
+  /** 座位表（id + 昵称 + 队伍），客户端据此显示玩家名与头顶标签 */
+  players: { id: string; nickname: string; team: string }[];
+  /** 场上可拾取物：普通食物（分档）/ 尸体残骸 / 磁铁 / 闪电 */
+  food: SnakeFoodItem[];
   snakes: {
     id: string;
+    /** 所属队伍（团队模式）；空串表示无队伍 */
+    team: string;
     /** 蛇头坐标（像素） */
     x: number;
     y: number;
@@ -89,6 +94,10 @@ export interface SnakeSnapshot {
     boosting: number;
     /** 加速冷却剩余（ms） */
     boostCd: number;
+    /** 磁铁效果剩余时间（ms），0 表示没有 */
+    magnet: number;
+    /** 闪电加速剩余时间（ms），0 表示没有 */
+    lightning: number;
     /** 距离重生还有多久（ms）；改为玩家手动重生后恒为 0，仅保留字段兼容旧客户端 */
     respawnIn: number;
     /** 已出局、正在等玩家选择「重生 / 退出」（无尽模式） */
@@ -98,6 +107,8 @@ export interface SnakeSnapshot {
   }[];
   status: 'playing' | 'over';
   winner: string;
+  /** 团队模式下各队总积分：team -> 分数 */
+  teamScores: Record<string, number>;
 }
 
 export class SnakeRuntimeService {
@@ -142,14 +153,20 @@ export class SnakeRuntimeService {
     if (this.runtimes.has(match._id)) return;
 
     const rawVariant = match.curr_state?.variant;
-    const variant: SnakeVariant = isSnakeVariant(rawVariant) ? rawVariant : 'multi';
-    const ids = (match.curr_state?.players || [])
-      .filter((p: any) => p.member_type === constant.MEMBER.TYPE.player)
-      .map((p: any) => p._id as string);
-    // 无尽模式 1 人即可开局；多人对战至少 2 人
+    const variant: SnakeVariant = isSnakeVariant(rawVariant) ? rawVariant : 'team';
+    const players = (match.curr_state?.players || [])
+      .filter((p: any) => p.member_type === constant.MEMBER.TYPE.player);
+    const ids = players.map((p: any) => p._id as string);
+    // 无尽模式 1 人即可开局；团队模式至少 2 人
     if (ids.length < (variant === 'endless' ? 1 : 2)) return;
 
-    const state = createSnakeState(ids, { variant, random: Math.random });
+    // 队伍映射：player_id -> team（团队模式）
+    const teams: Record<string, string> = {};
+    for (const p of players) {
+      if (p?._id && p.team) teams[String(p._id)] = String(p.team);
+    }
+
+    const state = createSnakeState(ids, { variant, teams, random: Math.random });
     const names = new Map<string, string>();
     for (const p of match.curr_state?.players || []) {
       if (p?._id) names.set(String(p._id), p.nickname || '玩家');
@@ -196,6 +213,19 @@ export class SnakeRuntimeService {
     return steerState(rt.state, player_id, angle);
   }
 
+  /**
+   * 该玩家是否在这局里（服务端运行时为准）。
+   *
+   * 无尽竞技房允许中途加入：加入者的蛇只存在于运行时内存态，
+   * 旧逻辑用开局时写的 match.players 做准入判定，会把这类玩家判成"不在局中"，
+   * 转向指令被直接丢弃 —— 表现就是"进了房间却完全控制不了方向"。
+   */
+  hasPlayer(match_id: string, player_id: string): boolean {
+    const rt = this.runtimes.get(match_id);
+    if (!rt) return false;
+    return rt.state.snakes.some(s => s.id === player_id);
+  }
+
   /** 加速（有冷却，服务端权威） */
   boost(match_id: string, player_id: string): boolean {
     const rt = this.runtimes.get(match_id);
@@ -217,16 +247,66 @@ export class SnakeRuntimeService {
     return true;
   }
 
-  /** 中途加入无尽竞技房：在空白处放一条新蛇（带 3s 重生保护） */
-  addPlayer(match_id: string, player_id: string, nickname?: string): boolean {
+  /**
+   * 中途加入无尽竞技房：在空白处放一条新蛇（带 3s 重生保护），
+   * 并把加入者回写进对局记录（内存基线 + MMatch.players + curr_state.players）。
+   *
+   * 回写是必须的，开局时写入的名单只包含开局那一刻的人：
+   * ① 转向指令的准入判定若只认开局名单，中途加入者会被当成局外人，指令被静默丢弃；
+   * ② 结算时 scores 表与玩家列表会对不上；
+   * ③ 服务端重启后按库重建运行时（spawn 只认 curr_state.players）会把他整个丢掉。
+   */
+  async addPlayer(match_id: string, player_id: string, nickname?: string): Promise<boolean> {
     const rt = this.runtimes.get(match_id);
     if (!rt) return false;
     if (nickname) rt.names.set(player_id, nickname);
     if (rt.state.snakes.some(s => s.id === player_id)) return true;
     const snake = addSnakeToState(rt.state, player_id, Math.random);
     snake.invincibleUntil = Date.now() + 3000;
+    await this.syncMatchMembers(rt, player_id, nickname);
     this.broadcast(rt);
     return true;
+  }
+
+  /**
+   * 把中途加入者同步进对局记录。
+   * 队伍信息取自房间成员表（团队模式下加入时落到具体队伍）。
+   */
+  private async syncMatchMembers(rt: Runtime, player_id: string, nickname?: string) {
+    try {
+      const room = await MRoom.findById(rt.room_id).lean(true) as any;
+      const member = (room?.members || []).find((m: any) => m._id === player_id);
+      const memberSnapshot = {
+        _id: player_id,
+        role: member?.role || 'snake',
+        team: member?.team || '',
+        player_type: member?.player_type || constant.PLAYER.TYPE.player,
+        member_type: member?.member_type || constant.MEMBER.TYPE.player,
+        ...(nickname ? { nickname } : {}),
+      };
+      // 内存基线：persist 会带上 players，服务端重启后 spawn 依赖它重建运行时
+      const basePlayers: any[] = Array.isArray(rt.base?.players) ? rt.base.players : [];
+      if (!basePlayers.some((p: any) => p._id === player_id)) {
+        rt.base = { ...rt.base, players: [...basePlayers, memberSnapshot] };
+      }
+      await MMatch.updateOne(
+        { _id: rt.match_id },
+        {
+          $push: {
+            'curr_state.players': memberSnapshot,
+            players: {
+              _id: player_id,
+              role: memberSnapshot.role,
+              team: memberSnapshot.team,
+              score: 0,
+              is_winner: false,
+            },
+          },
+        },
+      );
+    } catch (error) {
+      console.log('❌ 贪吃蛇中途加入者回写对局失败:', error);
+    }
   }
 
   /** 中途退出：把这条蛇从本局移除（其他人的对局继续） */
@@ -290,7 +370,7 @@ export class SnakeRuntimeService {
     const snake = rt.state.snakes.find(s => s.id === player_id);
     const score = Math.floor(snake?.score || 0);
     if (score <= 0) return;
-    const board = rt.variant === 'endless' ? 'endless' : 'multi';
+    const board = rt.variant === 'endless' ? 'endless' : 'team';
     try {
       await MPlayer.updateOne(
         { _id: player_id },
@@ -403,11 +483,16 @@ export class SnakeRuntimeService {
       h: state.h,
       radius: SNAKE_RADIUS,
       tick: state.tick,
-      variant: state.variant || 'multi',
-      players: state.snakes.map(s => ({ id: s.id, nickname: rt.names.get(s.id) || '玩家' })),
-      food: state.food.map(([x, y]) => [x, y] as [number, number]),
+      variant: state.variant || 'team',
+      players: state.snakes.map(s => ({
+        id: s.id,
+        nickname: rt.names.get(s.id) || '玩家',
+        team: s.team || '',
+      })),
+      food: state.food.map(f => ({ x: f.x, y: f.y, r: f.r, v: f.v, k: f.k })),
       snakes: state.snakes.map(s => ({
         id: s.id,
+        team: s.team || '',
         x: Math.round(s.x * 10) / 10,
         y: Math.round(s.y * 10) / 10,
         angle: Math.round(s.angle * 1000) / 1000,
@@ -419,12 +504,15 @@ export class SnakeRuntimeService {
         invincible: Math.max(0, (s.invincibleUntil || 0) - now),
         boosting: Math.max(0, (s.boostUntil || 0) - now),
         boostCd: Math.max(0, (s.boostReadyAt || 0) - now),
+        magnet: Math.max(0, (s.magnetUntil || 0) - now),
+        lightning: Math.max(0, (s.lightningUntil || 0) - now),
         respawnIn: 0,
-        awaiting: !s.alive && (state.variant || 'multi') === 'endless',
+        awaiting: !s.alive && (state.variant || 'team') === 'endless',
         respawns: s.respawns || 0,
       })),
       status: state.status,
       winner: state.winner,
+      teamScores: state.teamScores || {},
     };
   }
 }

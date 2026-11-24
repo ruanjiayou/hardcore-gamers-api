@@ -18,7 +18,7 @@ export const MGame = mongoose.model<IGame>('games', new mongoose.Schema({
   // solo=单人直接开局（无房间）；room=房间制（棋类/组队）
   mode: { type: String, default: 'room' },
   // 玩法变体：同一游戏可同时提供单人玩法与房间玩法（贪吃蛇：无尽/多人）
-  variants: [{ _id: false, key: String, label: String, mode: String, board: String, desc: String, numbers: { min: Number, max: Number } }],
+  variants: [{ _id: false, key: String, label: String, mode: String, board: String, desc: String, numbers: { min: Number, max: Number }, teams: [{ _id: false, name: String, size: Number }] }],
   // 排行榜分榜：每个玩法一张榜
   boards: [{ _id: false, key: String, label: String }],
   numbers: { min: Number, max: Number },
@@ -67,7 +67,7 @@ export const MMatch = mongoose.model<IMatch>('matches', new mongoose.Schema({
   status: String,
   init_state: mongoose.SchemaTypes.Mixed,
   curr_state: mongoose.SchemaTypes.Mixed,
-  players: [{ _id: String, role: String, score: Number, is_winner: Boolean }],
+  players: [{ _id: String, role: String, team: String, score: Number, is_winner: Boolean }],
   movements: [mongoose.SchemaTypes.Mixed],
   createdAt: Date, // 开始时间
   updatedAt: Date, // 结束时间

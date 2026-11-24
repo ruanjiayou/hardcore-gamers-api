@@ -6,6 +6,7 @@
 
 import { GameGenre, PlayerType, PlayerState, RoomStatus } from './constant';
 import type { IGame, IRoom, IVoicePack } from './types';
+import { snakeTeamRoles, snakeTeamSeats } from './games/snake/teams';
 
 export const SEED_GAMES: IGame[] = [
   {
@@ -128,38 +129,39 @@ export const SEED_GAMES: IGame[] = [
     _id: 'snake',
     slug: 'snake',
     title: '贪吃蛇',
-    desc: '经典贪吃蛇：虚拟摇杆任意方向实时转向，无尽挑战 1–6 人同图刷分（死亡弹框选重生/退出），多人对战 2–4 人竞技。',
+    desc: '经典贪吃蛇：虚拟摇杆任意方向实时转向，无尽挑战 1–10 人同图刷分（死亡弹框选重生/退出），团队模式 6 队同场竞技（每队最多 5 人）。',
     icon: '🐍',
     genre: GameGenre.puzzle,
     // 两种玩法都是房间制：官方桌提前建好，进房即玩
     mode: 'room',
     status: 1,
-    numbers: { min: 1, max: 6 },
+    numbers: { min: 1, max: 10 },
     variants: [
       {
         key: 'endless',
         label: '无尽挑战',
         mode: 'room',
         board: 'endless',
-        desc: '1–6 人同图刷分，任意方向转向，死亡即记榜，弹框选重生（3s 无敌）或退出',
-        numbers: { min: 1, max: 6 },
+        desc: '1–10 人同图刷分，任意方向转向，死亡即记榜，弹框选重生（3s 无敌）或退出',
+        numbers: { min: 1, max: 10 },
       },
       {
-        key: 'multi',
-        label: '多人对战',
+        key: 'team',
+        label: '团队模式',
         mode: 'room',
-        board: 'multi',
-        desc: '2–4 人同场，吃食物变长，活到最后者获胜',
-        numbers: { min: 2, max: 4 },
+        board: 'team',
+        desc: '最多 6 队同场竞技，每队最多 5 人；队友之间不会互相碰撞，最后存活的一队获胜',
+        numbers: { min: 2, max: 30 },
+        teams: snakeTeamRoles(),
       },
     ],
     boards: [
       { key: 'endless', label: '无尽榜' },
-      { key: 'multi', label: '多人榜' },
+      { key: 'team', label: '团队榜' },
     ],
     role_config: {
-      mode: 'fixed',
-      roles: [{ name: '玩家', size: 4 }],
+      mode: 'team',
+      roles: snakeTeamRoles(),
     },
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -178,8 +180,8 @@ export function officialRoomSeeds(): IRoom[] {
   const rooms: IRoom[] = [];
   for (const game of SEED_GAMES) {
     if (game.mode !== 'room') continue;
-    // 每种房间玩法变体各建一组官方桌（贪吃蛇：无尽 4 桌 + 多人 4 桌）。
-    // 无变体的游戏沿用老命名 official-{slug}-{i}；有变体时多人桌保留老 id（老库不迁移），
+    // 每种房间玩法变体各建一组官方桌（贪吃蛇：无尽 4 桌 + 团队 4 桌）。
+    // 无变体的游戏沿用老命名 official-{slug}-{i}；有变体时团队桌保留老 id（老库不迁移），
     // 其余变体加后缀，避免与已存在的官方桌撞号。
     const variants = (game.variants || []).filter(v => v.mode === 'room');
     const groups = variants.length
@@ -187,7 +189,7 @@ export function officialRoomSeeds(): IRoom[] {
         variant: v.key,
         label: v.label,
         numbers: v.numbers || game.numbers,
-        prefix: v.key === 'multi' ? `official-${game.slug}` : `official-${game.slug}-${v.key}`,
+        prefix: v.key === 'team' ? `official-${game.slug}` : `official-${game.slug}-${v.key}`,
       }))
       : [{ variant: '', label: '官方', numbers: game.numbers, prefix: `official-${game.slug}` }];
 
@@ -200,7 +202,8 @@ export function officialRoomSeeds(): IRoom[] {
           status: RoomStatus.waiting,
           owner_id: '',
           members: [],
-          seats: [],
+          // 团队模式预置座位（6 队 × 5 人）；其它玩法不占座
+          seats: group.variant === 'team' ? snakeTeamSeats() : [],
           numbers: group.numbers,
           isPrivate: false,
           official: true,
@@ -216,7 +219,7 @@ export function officialRoomSeeds(): IRoom[] {
   return rooms;
 }
 
-/** 机器人账号：每个游戏一个。用固定 _id 保证幂等、可被识别与回收。 */
+/** 机器人账号：贪吃蛇 5 个（无尽桌要坐满人机），其余游戏各一个。用固定 _id 保证幂等、可被识别与回收。 */
 export interface SeedRobot {
   user_id: string;
   player_id: string;
@@ -230,8 +233,19 @@ export const SEED_ROBOTS: SeedRobot[] = [
   { user_id: 'robot-user-xiangqi', player_id: 'robot-player-xiangqi', user_name: '🤖 象棋大师', game_id: 'xiangqi', slug: 'xiangqi' },
   { user_id: 'robot-user-othello', player_id: 'robot-player-othello', user_name: '🤖 黑白棋大师', game_id: 'othello', slug: 'othello' },
   { user_id: 'robot-user-chess', player_id: 'robot-player-chess', user_name: '🤖 国际象棋大师', game_id: 'chess', slug: 'chess' },
-  { user_id: 'robot-user-snake', player_id: 'robot-player-snake', user_name: '🤖 贪吃蛇大师', game_id: 'snake', slug: 'snake' },
+  // 贪吃蛇 5 个人机：沿用最早的 robot-player-snake（避免留下孤儿账号），其余顺延
+  { user_id: 'robot-user-snake', player_id: 'robot-player-snake', user_name: '🤖 贪吃蛇 1 号', game_id: 'snake', slug: 'snake' },
+  ...[2, 3, 4, 5].map(i => ({
+    user_id: `robot-user-snake-${i}`,
+    player_id: `robot-player-snake-${i}`,
+    user_name: `🤖 贪吃蛇 ${i} 号`,
+    game_id: 'snake',
+    slug: 'snake',
+  })),
 ];
+
+/** 官方无尽房要配的人机数量 */
+export const SNAKE_ENDLESS_BOT_COUNT = 5;
 
 /** 机器人玩家的初始状态，供 seed 与回收逻辑共用 */
 export function robotPlayerSeed(robot: SeedRobot) {

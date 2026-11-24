@@ -5,7 +5,7 @@
 import { v7 } from 'uuid';
 import { IRoom, IPlayer, IMember } from '../types/index';
 import { MGame, MMatch, MPlayer, MRoom } from '../models'
-import { cloneDeep, isEmpty, sumBy } from 'lodash';
+import { isEmpty, sumBy } from 'lodash';
 import redis from '../utils/redis'
 import config from '../config';
 import constant, { MemberType, PlayerType } from '../constant'
@@ -275,15 +275,21 @@ export class RoomService {
     }
     const newPlayer = { _id: player._id, player_type: player.type as PlayerType, member_type: data.type, role: '', team: '' }
     GameLogics[game.slug].assignRole(room, newPlayer)
-    const diff = { owner_id: room.owner_id, members: cloneDeep(room.members) }
+    // 团队模式：6 队 × 每队 5 人，队满即不可再入座（assignRole 分不到队时返回空 team）
+    if (data.type === constant.MEMBER.TYPE.player && room.settings?.variant === 'team' && !newPlayer.team) {
+      console.log(`❌ 团队模式已满员: ${data.room_id}`);
+      return { success: false, reason: '所有队伍已满' };
+    }
+    // 原子追加成员（$push）而不是整数组覆盖（$set）：
+    // 官方房开局时 5 个人机同时进房，整数组覆盖会互相踩掉（最后写入者赢），
+    // 表现为"补了 5 个人机，房间里只剩 3 个"。
+    // 'members._id': {$ne} 保证同一个人重复进房不会插入两条。
+    const update: Record<string, any> = { $push: { members: newPlayer } };
     // 空房由第一位对战玩家接任房主（官方房的"桌长"）；观战者不占房主位
     if (room.members.length === 0 && data.type === constant.MEMBER.TYPE.player) {
-      diff.owner_id = player._id;
+      update.$set = { owner_id: player._id };
     }
-    diff.members.push(newPlayer)
-    // 单一写入入口：房间成员与玩家状态在同一次请求内一起落库，
-    // 避免"匹配/机器人"等旁路路径只改 Room 不改 Player 造成的状态漂移。
-    await MRoom.updateOne({ _id: room._id }, { $set: diff })
+    await MRoom.updateOne({ _id: room._id, 'members._id': { $ne: player._id } }, update);
     // 真人玩家进房自动准备；观战者不计入准备，状态为 watching。
     await MPlayer.updateOne({ _id: player._id }, {
       $set: {
@@ -293,7 +299,8 @@ export class RoomService {
           : constant.PLAYER.STATE.prepared,
       }
     })
-    console.log(`👤 玩家 ${player._id} 加入房间 ${data.room_id}，当前人数: ${diff.members.length}`);
+    const updated = await MRoom.findById(room._id, { 'members._id': 1 }).lean(true);
+    console.log(`👤 玩家 ${player._id} 加入房间 ${data.room_id}，当前人数: ${updated?.members?.length || 0}`);
     return { success: true, newPlayer };
   }
 
@@ -437,7 +444,7 @@ export class RoomService {
       ? buildMatchTimeControl(config, players.map(p => p._id), Date.now())
       : undefined;
 
-    // 玩法变体（如贪吃蛇 endless/multi）：写入对局状态，供服务端/客户端判定玩法与分榜
+    // 玩法变体（如贪吃蛇 endless/team）：写入对局状态，供服务端/客户端判定玩法与分榜
     const variant = room.settings?.variant as string | undefined;
     const variantState = variant ? { variant } : {};
 
@@ -501,7 +508,7 @@ export class RoomService {
    *               不再使用 ±1。
    * @param scoreMode 'inc'（默认，累加到 MPlayer.score）| 'max'（取历史最高分，
    *                  用于单人游戏，保证排行榜展示最佳成绩且实时上报不重复累加）。
-   * @param board 可选分榜 key（多人贪吃蛇 multi 等）：结算时同时用 $max 写入
+   * @param board 可选分榜 key（多人贪吃蛇 team 等）：结算时同时用 $max 写入
    *              MPlayer.boards[board]，让分榜展示"该玩法单局最高分"。
    */
   async gameover(
@@ -530,14 +537,32 @@ export class RoomService {
     const scoreOf = (pid: string) => scores
       ? (scores[pid] ?? 0)
       : (winner_player_id ? (pid === winner_player_id ? 1 : -1) : 0);
+    // 团队模式（贪吃蛇 team）：胜者是"一支队伍"，队内成员共享胜负。
+    // winner_player_id 传的是该队贡献最高分的成员，据此推出全队名单。
+    const winnerTeam = winner_player_id
+      ? (match.players || []).find((p: any) => p._id === winner_player_id)?.team || ''
+      : '';
+    const isTeamMatch = !!winnerTeam && board === 'team';
+    const winnerIds = new Set<string>();
+    if (winner_player_id) winnerIds.add(winner_player_id);
+    if (isTeamMatch) {
+      for (const p of (match.players || []) as any[]) {
+        if (p.team === winnerTeam) winnerIds.add(p._id);
+      }
+    }
     const claim = await MMatch.updateOne(
       { _id: match._id, status: constant.MATCH.STATUS.playing },
       {
         $set: {
           status: constant.MATCH.STATUS.gameover,
           updatedAt: new Date(),
-          players: match.players.map(p => ({ ...p, score: scoreOf(p._id) })),
+          players: match.players.map(p => ({
+            ...p,
+            score: scoreOf(p._id),
+            is_winner: winnerIds.has(p._id),
+          })),
           ...(scores ? { 'stats.scores': scores } : {}),
+          ...(isTeamMatch ? { 'stats.winner_team': winnerTeam } : {}),
         }
       }
     );
@@ -583,9 +608,10 @@ export class RoomService {
                 // 平局（winner 为空且无显式分数）不再扣分——修复原有不一致：
                 // MMatch.players[].score 写 0 而 MPlayer.score 却 -1。
                 ...(useMax ? {} : { score: scoreOf(m._id) }),
-                'stats.winners': scores
-                  ? 0
-                  : (winner_player_id && m._id === winner_player_id ? 1 : 0),
+                // 团队模式：整支获胜队伍都记一次胜场；其他情况沿用单人胜者语义
+                'stats.winners': isTeamMatch
+                  ? (winnerIds.has(m._id) ? 1 : 0)
+                  : (scores ? 0 : (winner_player_id && m._id === winner_player_id ? 1 : 0)),
               } : {}),
             },
             ...(Object.keys(maxFields).length ? { $max: maxFields } : {}),

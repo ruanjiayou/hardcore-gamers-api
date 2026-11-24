@@ -212,4 +212,35 @@ describe('离开房间流转', () => {
       expect(d.reset).toBe(false);
     }
   });
+
+  test('官方无尽房：真人离开不清场、不回收人机（人机常驻陪玩）', () => {
+    const room = {
+      official: true,
+      variant: 'endless',
+      owner_id: 'p1',
+      members: [human('p1'), robot('r1'), robot('r2')],
+    };
+    const d = resolveLeaveAction(room, 'p1');
+    expect(d.action).toBe('leave');
+    if (d.action === 'leave') {
+      // 不 reset：人机留在房里，对局继续
+      expect(d.reset).toBe(false);
+      expect(d.transferOwnerTo).toBe('');
+    }
+  });
+
+  test('官方无尽房：真人离开时房主转让给下一位真人对战玩家', () => {
+    const room = {
+      official: true,
+      variant: 'endless',
+      owner_id: 'p1',
+      members: [human('p1'), robot('r1'), human('p2')],
+    };
+    const d = resolveLeaveAction(room, 'p1');
+    expect(d.action).toBe('leave');
+    if (d.action === 'leave') {
+      expect(d.transferOwnerTo).toBe('p2');
+      expect(d.reset).toBe(false);
+    }
+  });
 });

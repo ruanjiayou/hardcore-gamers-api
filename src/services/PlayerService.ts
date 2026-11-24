@@ -4,11 +4,12 @@
  */
 
 import { v7 } from 'uuid';
-import { MGame, MPlayer, MRoom, MUser } from '../models';
+import { MGame, MMatch, MPlayer, MRoom, MUser } from '../models';
 import redis from '../utils/redis'
 import config from '../config';
 import { isEmpty, sumBy } from 'lodash';
 import constant, { PlayerState, RoomStatus } from '../constant';
+import { isDanglingRoomRef, isZombieMatch, isZombieRoom } from '../utils/roomPolicy';
 
 export class PlayerService {
 
@@ -20,10 +21,7 @@ export class PlayerService {
   async sanitizePlayerRoom<T extends { _id: string; room_id?: string }>(player: T): Promise<T> {
     if (!player?.room_id) return player;
     const room = await MRoom.findById(player.room_id).lean(true) as any;
-    const alive = room
-      && room.status !== constant.ROOM.STATUS.deleted
-      && (room.members || []).some((m: any) => m._id === player._id);
-    if (alive) return player;
+    if (!isDanglingRoomRef(player, room)) return player;
     await MPlayer.updateOne(
       { _id: player._id },
       { $set: { room_id: '', state: constant.PLAYER.STATE.online } },
@@ -33,30 +31,20 @@ export class PlayerService {
 
   /**
    * 全表修复悬空的玩家 room_id（服务启动时调用一次）。
-   * 直接用 Mongo 聚合比对，避免逐个玩家的往返查询。
+   *
+   * 判定逻辑抽在 utils/roomPolicy.isDanglingRoomRef（纯函数，可单测）。
+   * 这里按房间批量查，避免逐个玩家往返查询。
    */
   async repairDanglingRooms(): Promise<number> {
-    const stale = await MPlayer.aggregate([
-      { $match: { room_id: { $nin: ['', null] } } },
-      {
-        $lookup: {
-          from: 'rooms',
-          localField: 'room_id',
-          foreignField: '_id',
-          as: 'room',
-        },
-      },
-      {
-        $match: {
-          $or: [
-            { room: { $size: 0 } },
-            { 'room.status': constant.ROOM.STATUS.deleted },
-          ],
-        },
-      },
-      { $project: { _id: 1 } },
-    ]);
-    const ids = stale.map((p: any) => p._id);
+    const players = await MPlayer.find({ room_id: { $nin: ['', null] } }, { _id: 1, room_id: 1 }).lean(true) as any[];
+    if (!players.length) return 0;
+    const roomIds = [...new Set(players.map(p => String(p.room_id)))];
+    const rooms = await MRoom.find({ _id: { $in: roomIds } }).lean(true) as any[];
+    const roomMap = new Map(rooms.map(r => [String(r._id), r]));
+
+    const ids = players
+      .filter(p => isDanglingRoomRef(p, roomMap.get(String(p.room_id))))
+      .map(p => p._id);
     if (!ids.length) return 0;
     await MPlayer.updateMany(
       { _id: { $in: ids } },
@@ -64,6 +52,108 @@ export class PlayerService {
     );
     console.log(`🧹 清理悬空 room_id 的玩家: ${ids.length}`);
     return ids.length;
+  }
+
+  /**
+   * 清理同一 (user_id, game_id) 的重复玩家记录（服务启动时调用一次）。
+   *
+   * 历史上有过"改名/改库"操作，导致同一个用户在同一个游戏下有多条 player 记录：
+   * - getOrCreatePlayer 用 findOne({user_id, game_id}) 取到的是任意一条，
+   *   运气好时拿到干净的那条、运气差时拿到挂着旧 room_id 的那条，
+   *   表现为"进游戏就被弹回一个早就不该在的房间"；
+   * - 旧的重复记录还会让排行榜出现同一人的多条数据。
+   *
+   * 策略：保留每组里最新的一条（updatedAt 优先，其次 createdAt），
+   * 其余重复记录直接删除。删除前会把 room_id 清空，避免留下悬空指针。
+   */
+  async dedupePlayers(): Promise<number> {
+    const groups = await MPlayer.aggregate([
+      { $match: { user_id: { $nin: ['', null] } } },
+      { $sort: { updatedAt: -1, createdAt: -1 } },
+      {
+        $group: {
+          _id: { user_id: '$user_id', game_id: '$game_id' },
+          keep: { $first: '$_id' },
+          dupes: { $push: '$_id' },
+        },
+      },
+      { $match: { 'dupes.1': { $exists: true } } },
+    ]);
+    let removed = 0;
+    for (const g of groups) {
+      const dupes = (g.dupes as string[]).filter(id => id !== g.keep);
+      if (!dupes.length) continue;
+      await MPlayer.updateMany(
+        { _id: { $in: dupes } },
+        { $set: { room_id: '', state: constant.PLAYER.STATE.online } },
+      );
+      await MPlayer.deleteMany({ _id: { $in: dupes } });
+      removed += dupes.length;
+      console.log(`🧹 重复玩家记录：user=${g._id.user_id} game=${g._id.game_id} 保留 ${g.keep}，删除 ${dupes.length} 条`);
+    }
+    if (removed) console.log(`🧹 共清理重复玩家记录 ${removed} 条`);
+    return removed;
+  }
+
+  /**
+   * 清理 game_id 指向已不存在游戏的孤儿玩家记录（服务启动时调用一次）。
+   *
+   * 库改名/改库后，旧 game_id（Mongo ObjectId 格式）会与新的 slug 格式 _id 对不上，
+   * 这些记录永远不会被 getOrCreatePlayer 命中，却会一直留在库里。
+   */
+  async removeOrphanPlayers(): Promise<number> {
+    const gameIds = new Set((await MGame.find({}, { _id: 1 }).lean(true)).map(g => String(g._id)));
+    const players = await MPlayer.find({}, { _id: 1, game_id: 1 }).lean(true);
+    const orphanIds = players
+      .filter(p => !gameIds.has(String(p.game_id)))
+      .map(p => p._id);
+    if (!orphanIds.length) return 0;
+    await MPlayer.deleteMany({ _id: { $in: orphanIds } });
+    console.log(`🧹 清理孤儿玩家记录（game_id 不存在）: ${orphanIds.length}`);
+    return orphanIds.length;
+  }
+
+  /**
+   * 清理僵尸对局与僵尸房间（服务启动时调用一次）。
+   *
+   * - 僵尸对局：status=playing，但房间已经回到 waiting / 已解散 / 已不存在
+   *   （服务端重启前没走完结算流程，或房间被强制解散）。
+   *   这些对局会让房间列表一直显示"游戏中"，玩家点进去却玩不了。
+   * - 僵尸房间：status=playing 但 match_id 指向的对局不存在。
+   */
+  async cleanupZombieMatches(): Promise<number> {
+    const matches = await MMatch.find({ status: constant.MATCH.STATUS.playing }).lean(true) as any[];
+    if (!matches.length) return 0;
+    const matchIds = new Set(matches.map(m => String(m._id)));
+    const rooms = await MRoom.find({ match_id: { $in: [...matchIds] } }).lean(true) as any[];
+    const roomByMatch = new Map(rooms.map(r => [String(r.match_id), r]));
+
+    const zombieMatchIds: string[] = [];
+    for (const m of matches) {
+      const room = roomByMatch.get(String(m._id));
+      if (isZombieMatch(m, room)) zombieMatchIds.push(m._id);
+    }
+    if (zombieMatchIds.length) {
+      await MMatch.updateMany(
+        { _id: { $in: zombieMatchIds } },
+        { $set: { status: constant.MATCH.STATUS.gameover, updatedAt: new Date() } },
+      );
+    }
+    // 房间停在 playing 但对局已不在「进行中」集合里（不存在或已结算）
+    // → 房间回等待态，避免列表里一直显示"对局中"却点不进去
+    const allPlayingRooms = await MRoom.find({ status: constant.ROOM.STATUS.playing }).lean(true) as any[];
+    const zombieRooms = allPlayingRooms.filter(r => isZombieRoom(r, matchIds));
+    for (const r of zombieRooms) {
+      await MRoom.updateOne(
+        { _id: r._id },
+        { $set: { status: constant.ROOM.STATUS.waiting, match_id: '', updatedAt: new Date() } },
+      );
+      console.log(`🧹 僵尸房间回等待态: ${r._id}（对局 ${r.match_id} 已不存在）`);
+    }
+    if (zombieMatchIds.length) {
+      console.log(`🧹 清理僵尸对局: ${zombieMatchIds.length}`);
+    }
+    return zombieMatchIds.length + zombieRooms.length;
   }
 
   /**
@@ -75,7 +165,12 @@ export class PlayerService {
       throw new Error('游戏不存在')
     }
     // 如果玩家已存在，返回该玩家（顺手清掉指向已消失/已解散房间的悬空 room_id）
-    let player = await MPlayer.findOne({ user_id, game_id: game._id }).lean(true);
+    // 排序取最新的一条：历史上同一 (user_id, game_id) 可能有多条记录（改库/改名留下的），
+    // findOne 不排序时命中哪条是随机的 —— 命中挂着旧 room_id 的那条就会出现
+    // "进游戏被弹回旧房间、反复弹已离开房间"。
+    let player = await MPlayer.findOne({ user_id, game_id: game._id })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .lean(true);
     if (player) {
       return this.sanitizePlayerRoom(player);
     }
@@ -149,7 +244,7 @@ export class PlayerService {
 
   /**
    * 获取排行榜
-   * @param board 可选分榜 key（如贪吃蛇 endless/multi）：按 boards.<key> 最高分排序；
+   * @param board 可选分榜 key（如贪吃蛇 endless/team）：按 boards.<key> 最高分排序；
    *              缺省按游戏总分 score 排序（棋类等单一玩法的游戏）
    */
   async getLeaderboard(slug: string, limit: number = 5, board?: string) {

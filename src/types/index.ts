@@ -27,6 +27,8 @@ export interface IGameVariant {
   desc?: string;
   /** 该玩法的人数限制（缺省用 game.numbers） */
   numbers?: { min: number, max: number };
+  /** 该玩法的队伍配置（团队模式：6 队 × 每队 5 人） */
+  teams?: { name: string; size: number }[];
 }
 
 export interface IGame {
@@ -135,10 +137,18 @@ export interface IVoicePack {
   createdAt: Date;
   updatedAt: Date;
 }
+/**
+ * 房间座位块（rooms.seats）。
+ * 团队模式（贪吃蛇）用它声明"有哪些队伍、每队几个位置"：
+ * [{ team: '红队', size: 5 }, ...]。
+ * role / user_id 保留给未来的固定角色座位（如棋类红/黑方）。
+ */
 export interface ISeat {
-  role: string;
   team: string;
-  user_id: string;
+  /** 该座位块的容量（团队模式：每队人数上限） */
+  size?: number;
+  role?: string;
+  user_id?: string;
 }
 // ========== 玩家相关 ==========
 export interface IPlayer {

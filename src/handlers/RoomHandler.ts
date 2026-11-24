@@ -11,6 +11,7 @@ import constant from '../constant'
 import { MGame, MMatch, MPlayer, MRoom, MUser } from '../models';
 import GameLogics from '../games'
 import { gameService } from '../services/GameService';
+import { addRobotToRoom, releaseClaim as releaseRobotClaim } from '../services/RobotService';
 import { pick } from 'lodash';
 import config from '../config';
 import { TicketTool } from '../utils';
@@ -255,67 +256,13 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     }
   }
   async function addRobot(data: { room_id: string; }, callback: (success: boolean, message?: string) => void) {
-    const room = await MRoom.findById(data.room_id).lean(true);
-    if (!room) return callback(false, '房间不存在');
-
-    const game = await MGame.findById(room.game_id, { slug: 1 }).lean(true);
-    if (!game) return callback(false, '游戏不存在');
-
-    // 限制每个房间的机器人数量（固定房模式，避免机器人无限堆叠）
-    const robotCount = room.members.filter(m => m.player_type === constant.PLAYER.TYPE.robot).length;
-    if (robotCount >= config.max_robot_per_room) {
-      return callback(false, '本房间机器人数量已达上限');
-    }
-
-    // 原子占用一个在线机器人（state online -> matching），防止并发重复分配同一个账号。
-    // 只有种子数据里 type=robot/state=online 的账号会被选中。
-    const claimed = await MPlayer.findOneAndUpdate(
-      { game_id: room.game_id, type: constant.PLAYER.TYPE.robot, state: constant.PLAYER.STATE.online },
-      { $set: { state: constant.PLAYER.STATE.matching, updatedAt: new Date() } },
-      { sort: { level: -1 }, new: true }
-    ).lean(true);
-    if (!claimed) return callback(false, '暂无空闲机器人');
-
-    const user = await MUser.findById(claimed.user_id).lean(true);
-    if (!user) {
-      await releaseClaim(claimed._id);
-      return callback(false, '机器人账号异常');
-    }
-
-    // 回滚占用：把机器人放回 online 池
-    const rollback = async () => {
-      await MPlayer.updateOne({ _id: claimed._id }, { $set: { state: constant.PLAYER.STATE.online, room_id: '' } });
-    };
-
-    try {
-      const ticket = ticketHelper.encrypt(JSON.stringify({ user_id: claimed.user_id, player_id: claimed._id }));
-      const resp = await fetch(`${config.robot_url}/add-robot`, {
-        method: 'post',
-        headers: new Headers({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          player_id: claimed._id,
-          slug: game.slug,
-          serverUrl: config.server_ws_url,
-          ticket,
-          room_id: data.room_id,
-        }),
-      });
-      const body = await resp.json().catch(() => null);
-      if (!resp.ok || body?.code !== 0) {
-        await rollback();
-        return callback(false, '机器人服务不可用');
-      }
-      // 机器人服务已接受，bot 会带着 ticket 自行 join-room（joinRoom 会把 state 置为 inroom）
-      callback(true);
-    } catch (error) {
-      console.error('❌ 添加机器人失败:', error);
-      await rollback();
-      callback(false, '机器人服务不可用');
-    }
+    const res = await addRobotToRoom(data.room_id);
+    if (!res.ok) return callback(false, res.message);
+    callback(true);
   }
 
   async function releaseClaim(player_id: string) {
-    await MPlayer.updateOne({ _id: player_id }, { $set: { state: constant.PLAYER.STATE.online, room_id: '' } });
+    await releaseRobotClaim(player_id);
   }
 
   /**
@@ -414,7 +361,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
           const winnerId: string = data?.winner !== undefined ? data.winner : movement.player_id;
           // data.scores：单人游戏上报的本局分数表 / 多人贪吃蛇的分数表；
           // scoreMode='max' 表示按该玩法最高分记入榜单（而非累加）；
-          // data.board：分榜 key（贪吃蛇 endless/multi）。
+          // data.board：分榜 key（贪吃蛇 endless/team）。
           await roomService.gameover(match.room_id, match_id, winnerId, data?.scores, data?.scoreMode, data?.board)
           // data.score：本局得分，随结算广播下发给前端展示（对战游戏无此字段）。
           const scoreField = data?.score !== undefined ? { score: data.score, solo: !!data?.solo } : {};
@@ -542,7 +489,7 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       // 实时多人（贪吃蛇）：认输 = 自我淘汰，对局继续推进，由运行时判出最后存活者
       const match = await MMatch.findById(data.match_id).lean(true);
       const matchGame = match && await MGame.findById(match.game_id, { slug: 1 }).lean(true);
-      if (matchGame?.slug === 'snake' && match?.curr_state?.variant === 'multi') {
+      if (matchGame?.slug === 'snake' && match?.curr_state?.variant === 'team') {
         const ok = snakeRuntimeService.eliminate(data.match_id, data.player_id);
         io.to(`room:${data.room_id}`).emit('room:message', {
           player_id: player._id,

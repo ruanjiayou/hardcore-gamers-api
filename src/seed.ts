@@ -115,6 +115,24 @@ export async function seedOfficialRooms(): Promise<SeedResult> {
         if (wantVariant && existing.settings?.variant !== wantVariant) {
           await MRoom.updateOne({ _id: room._id }, { $set: { 'settings.variant': wantVariant } });
         }
+        // 人数上限校正：无尽模式从 6 人扩到 10 人、团队模式 6 队×5 人后，
+        // 老库里的官方桌仍写着旧的 numbers.max，会导致房间装不满人。
+        const wantNumbers = room.numbers;
+        const numbersChanged =
+          !!wantNumbers &&
+          (existing.numbers?.min !== wantNumbers.min || existing.numbers?.max !== wantNumbers.max);
+        // 队伍座位校正：团队模式官方桌必须带 6 队×5 人的座位表，
+        // 否则开局时无法按队伍分配名额（seats 为空会退化成无队模式）。
+        const wantSeats = room.seats || [];
+        const seatsChanged =
+          wantSeats.length > 0 &&
+          JSON.stringify(existing.seats || []) !== JSON.stringify(wantSeats);
+        if (numbersChanged || seatsChanged) {
+          const patch: Record<string, unknown> = { updatedAt: new Date() };
+          if (numbersChanged) patch.numbers = wantNumbers;
+          if (seatsChanged) patch.seats = wantSeats;
+          await MRoom.updateOne({ _id: room._id }, { $set: patch });
+        }
       }
       kept++;
       continue;

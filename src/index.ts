@@ -22,7 +22,10 @@ import { seedAll } from './seed';
 import { timeControlService } from './services/TimeControlService';
 import { snakeRuntimeService } from './services/SnakeRuntimeService';
 import { roomService } from './services/RoomService';
-import { MPlayer } from './models';
+import { ensureRoomBots } from './services/RobotService';
+import { SNAKE_ENDLESS_BOT_COUNT } from './seed.data';
+import { MPlayer, MRoom } from './models';
+import constant from './constant';
 import { pick } from 'lodash';
 
 const app: Express = express();
@@ -186,12 +189,32 @@ server.listen(config.port, async () => {
     console.error('❌ 悬空 room_id 清理失败（服务继续启动）:', error);
   }
 
-  // 多人贪吃蛇运行时：服务端权威 tick。结算走 roomService.gameover（分榜 multi，按单局最高分）
+  // 清理重复 / 孤儿玩家记录：
+  // 同一 (user_id, game_id) 有多条 player 时，getOrCreatePlayer 取到哪条是随机的，
+  // 拿到挂着旧 room_id 的那条就会"进游戏被弹回旧房间、反复弹已离开房间"。
+  try {
+    await playerService.dedupePlayers();
+  } catch (error) {
+    console.error('❌ 重复玩家记录清理失败（服务继续启动）:', error);
+  }
+  try {
+    await playerService.removeOrphanPlayers();
+  } catch (error) {
+    console.error('❌ 孤儿玩家记录清理失败（服务继续启动）:', error);
+  }
+  // 清理僵尸对局 / 僵尸房间（房间停在 playing 但对局已不存在）
+  try {
+    await playerService.cleanupZombieMatches();
+  } catch (error) {
+    console.error('❌ 僵尸对局清理失败（服务继续启动）:', error);
+  }
+
+  // 贪吃蛇运行时：服务端权威 tick。结算走 roomService.gameover（分榜 endless/team，按单局最高分）
   snakeRuntimeService.start(io, async ({ room_id, match_id, winner, scores, variant }) => {
-    const board = variant === 'endless' ? 'endless' : 'multi';
+    const board = variant === 'endless' ? 'endless' : 'team';
     // 两种玩法都按"该玩法最高分"记录（无尽跨重生、多人单局），不累加
     await roomService.gameover(room_id, match_id, winner, scores, 'max', board);
-    if (variant === 'multi') {
+    if (variant === 'team') {
       const winnerPlayer = winner ? await MPlayer.findById(winner).lean(true) : null;
       io.to(`room:${room_id}`).emit('room:game-over', winner
         ? { ...pick(winnerPlayer || {}, ['_id', 'nickname']), scores }
@@ -201,6 +224,22 @@ server.listen(config.port, async () => {
   });
   // 重启后回收中断的多人对局（否则房间会永远停在 playing）
   await snakeRuntimeService.resetStaleMatches();
+
+  // 给第一个官方无尽桌补 5 个人机（幂等：已有就只补差量）。
+  // robot 服务没起来时静默跳过，不能拖慢/阻塞服务启动。
+  try {
+    const endlessRoom = await MRoom.findOne({
+      game_id: 'snake',
+      'settings.variant': 'endless',
+      status: { $ne: constant.ROOM.STATUS.deleted },
+    }).sort({ createdAt: 1 }).lean(true);
+    if (endlessRoom) {
+      await ensureRoomBots(endlessRoom._id, SNAKE_ENDLESS_BOT_COUNT);
+    }
+  } catch (error) {
+    console.error('❌ 无尽桌补人机失败（服务继续启动）:', error);
+  }
+
   console.log(`\n🚀 游戏大厅服务器启动成功!`);
   console.log(`📍 地址: http://localhost:${config.port}`);
   console.log(`🔌 WebSocket: ws://localhost:${config.port}`);
