@@ -190,7 +190,8 @@ router.post('/robots', wrap(async (req, res) => {
   const user_id = `robot-user-${game.slug}-${suffix}`;
   await MUser.create({
     _id: user_id,
-    name: `🤖 ${nickname || '人机'}`,
+    // 昵称不带 🤖 前缀（UI-054）：机器人身份由玩家列表的「机」徽标体现
+    name: nickname || '人机',
     pass: md5(v7()),
     createdAt: new Date(),
   });
@@ -199,7 +200,7 @@ router.post('/robots', wrap(async (req, res) => {
     user_id,
     game_id: game._id,
     room_id: '',
-    nickname: nickname || '🤖 人机',
+    nickname: nickname || '人机',
     type: PLAYER.TYPE.robot,
     state: PLAYER.STATE.online,
     level: Number(level) || 1,

@@ -221,7 +221,10 @@ export function officialRoomSeeds(): IRoom[] {
   return rooms;
 }
 
-/** 机器人账号：贪吃蛇 5 个（无尽桌要坐满人机），其余游戏各一个。用固定 _id 保证幂等、可被识别与回收。 */
+/**
+ * 机器人账号：贪吃蛇 5 个（无尽桌要坐满人机），其余游戏各一个。用固定 _id 保证幂等、可被识别与回收。
+ * 昵称**不带 🤖 前缀**（UI-054）：机器人身份由玩家列表的「机」徽标和 🤖 头像体现，不再占昵称。
+ */
 export interface SeedRobot {
   user_id: string;
   player_id: string;
@@ -231,16 +234,16 @@ export interface SeedRobot {
 }
 
 export const SEED_ROBOTS: SeedRobot[] = [
-  { user_id: 'robot-user-gomoku', player_id: 'robot-player-gomoku', user_name: '🤖 五子棋大师', game_id: 'gomoku', slug: 'gomoku' },
-  { user_id: 'robot-user-xiangqi', player_id: 'robot-player-xiangqi', user_name: '🤖 象棋大师', game_id: 'xiangqi', slug: 'xiangqi' },
-  { user_id: 'robot-user-othello', player_id: 'robot-player-othello', user_name: '🤖 黑白棋大师', game_id: 'othello', slug: 'othello' },
-  { user_id: 'robot-user-chess', player_id: 'robot-player-chess', user_name: '🤖 国际象棋大师', game_id: 'chess', slug: 'chess' },
+  { user_id: 'robot-user-gomoku', player_id: 'robot-player-gomoku', user_name: '五子棋大师', game_id: 'gomoku', slug: 'gomoku' },
+  { user_id: 'robot-user-xiangqi', player_id: 'robot-player-xiangqi', user_name: '象棋大师', game_id: 'xiangqi', slug: 'xiangqi' },
+  { user_id: 'robot-user-othello', player_id: 'robot-player-othello', user_name: '黑白棋大师', game_id: 'othello', slug: 'othello' },
+  { user_id: 'robot-user-chess', player_id: 'robot-player-chess', user_name: '国际象棋大师', game_id: 'chess', slug: 'chess' },
   // 贪吃蛇 5 个人机：沿用最早的 robot-player-snake（避免留下孤儿账号），其余顺延
-  { user_id: 'robot-user-snake', player_id: 'robot-player-snake', user_name: '🤖 贪吃蛇 1 号', game_id: 'snake', slug: 'snake' },
+  { user_id: 'robot-user-snake', player_id: 'robot-player-snake', user_name: '贪吃蛇 1 号', game_id: 'snake', slug: 'snake' },
   ...[2, 3, 4, 5].map(i => ({
     user_id: `robot-user-snake-${i}`,
     player_id: `robot-player-snake-${i}`,
-    user_name: `🤖 贪吃蛇 ${i} 号`,
+    user_name: `贪吃蛇 ${i} 号`,
     game_id: 'snake',
     slug: 'snake',
   })),
