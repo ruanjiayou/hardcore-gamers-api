@@ -1,4 +1,9 @@
+// 第一个 import：logger 加载时会接管全局 console，保证下面的配置日志也可带时间戳。
+// config 被几乎所有模块依赖，放在这里等于给所有入口（index / seed / 测试）都装好了日志。
+import { createLogger, maskDsn } from './utils/logger';
 import { Etcd3 } from 'etcd3';
+
+const log = createLogger('config');
 
 /**
  * 配置单一入口：参考 cms-api 用 etcd3 + 环境 namespace 读取配置。
@@ -33,6 +38,8 @@ export interface AppConfig {
   stepLimitSec: number;
   /** 语音包权限白名单（etcd 可配）：这些 user_id 无需在库里置位也能用非默认语音包 */
   voice_pack_allowlist: string[];
+  /** 管理端（/admin）登录密码；为空则管理端拒绝登录 */
+  admin_pass: string;
 }
 
 /** 默认 JSON：字段齐全、值为空字符串 / 0 / false，仅用于类型提示与兜底 */
@@ -47,6 +54,7 @@ const defaultConfig: AppConfig = {
   expires: 0,
   max_robot_per_room: 0,
   voice_pack_allowlist: [],
+  admin_pass: '',
   enabled: false,
   totalBudgetMin: 0,
   stepLimitSec: 0,
@@ -72,16 +80,23 @@ async function loadConfig() {
     const raw = await client.get(CONFIG_KEY).string();
     loaded = true;
     if (!raw) {
-      console.warn(`[config] etcd 中未找到 ${env}/${CONFIG_KEY}，使用默认空配置`);
+      log.warn(`etcd 中未找到 ${env}/${CONFIG_KEY}，使用默认空配置`);
       return;
     }
     Object.assign(config, JSON.parse(raw));
-    console.log(`[config] 已从 etcd 加载 ${env}/${CONFIG_KEY}`);
-    console.log(JSON.stringify(config))
+    log.info(`已从 etcd 加载 ${env}/${CONFIG_KEY}`);
+    // 打印前脱敏：mongo/redis 的 DSN 里带密码，secret 与 admin_pass 更不能落盘
+    log.info({
+      ...config,
+      secret: config.secret ? '***(已配置)' : '',
+      admin_pass: config.admin_pass ? '***(已配置)' : '',
+      mongo_url: maskDsn(config.mongo_url),
+      redis_url: maskDsn(config.redis_url),
+    });
   } catch (err) {
     loaded = true;
     // etcd 不可用时保持默认值，避免整个服务启动失败
-    console.error(`[config] 读取 etcd ${env}/${CONFIG_KEY} 失败：`, err);
+    log.error(`读取 etcd ${env}/${CONFIG_KEY} 失败：`, err);
   }
 }
 
@@ -91,7 +106,7 @@ async function loadConfig() {
 await Promise.race([
   loadConfig(),
   new Promise(resolve => setTimeout(() => {
-    if (!loaded) console.error(`[config] 读取 etcd ${env}/${CONFIG_KEY} 超时，使用默认空配置`);
+    if (!loaded) log.error(`读取 etcd ${env}/${CONFIG_KEY} 超时（5s），使用默认空配置 —— 检查 etcd_url 与网络`);
     resolve(null);
   }, 5000)),
 ]);

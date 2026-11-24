@@ -18,9 +18,10 @@ export class GameService {
 
   /**
    * 获取所有游戏
+   * 过滤 status=0（管理端下架）：老数据没有 status 字段，用 $ne:0 而不是 ===1
    */
   async getAllGames(stat: boolean): Promise<IGame[]> {
-    const games = await MGame.find().lean(true).then(list => list.map(normalizeMode)) as unknown as IGame[];
+    const games = await MGame.find({ status: { $ne: 0 } }).lean(true).then(list => list.map(normalizeMode)) as unknown as IGame[];
     if (stat) {
       // 口径与 getRoomsByGameId 一致：排除已解散（deleted 软删）与临时（单人快开）的房间。
       // 否则解散后房间列表为空、但游戏卡片的房间数仍把软删房间计入（列表空、数量 1）。
@@ -69,7 +70,7 @@ export class GameService {
    * 按类型获取游戏
    */
   async getGamesByGenre(genre: string): Promise<IGame[]> {
-    return MGame.find({ genre }).lean(true)
+    return MGame.find({ genre, status: { $ne: 0 } }).lean(true)
   }
 
   /**

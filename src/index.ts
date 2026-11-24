@@ -1,10 +1,18 @@
 /**
  * 游戏大厅服务器入口
  * Bun + Express + Socket.io
+ *
+ * 日志：`utils/logger.ts` 会在模块加载时接管全局 console，
+ * 因此本文件及所有 service/handler 里的 console.log 都自动带时间戳与级别。
+ * 需要新日志时用 `createLogger('scope')`，不要直接 console。
  */
 
-import express, { Express } from 'express';
+// 必须第一个 import：让 console 桥接早于任何模块打日志（ESM 按声明顺序求值）
+import { createLogger, flushLogs } from './utils/logger';
+
+import express, { Express, Router } from 'express';
 import http from 'http';
+import path from 'path';
 import { Server, Socket } from 'socket.io';
 import { authMiddleware, type AuthSocket } from './middleware/auth';
 import { setupLobbyHandlers } from './handlers/LobbyHandler';
@@ -16,6 +24,11 @@ import redis from './utils/redis'
 import gameController from './controller/game'
 import oauthController from './controller/oauth'
 import voicePackController from './controller/voicePack'
+import adminController from './controller/admin'
+import diagnosticsController from './controller/diagnostics'
+import { apiNotFound, errorHandler, getHttpStats, requestLogger } from './middleware/requestLogger'
+import { listMounts, listRoutes, mountRoute } from './utils/routes'
+import { buildInfo } from './utils/buildInfo'
 import config from './config';
 import { userService } from './services/UserService';
 import { seedAll } from './seed';
@@ -27,6 +40,9 @@ import { SNAKE_ENDLESS_BOT_COUNT } from './seed.data';
 import { MPlayer, MRoom } from './models';
 import constant from './constant';
 import { pick } from 'lodash';
+
+const log = createLogger('boot');
+const httpLog = createLogger('http');
 
 const app: Express = express();
 const server = http.createServer(app);
@@ -44,6 +60,8 @@ const io = new Server(server, {
 /**
  * 中间件设置
  */
+// 访问日志必须最先挂：连 404 也要留痕，否则「接口不存在」无从查起
+app.use(requestLogger);
 app.use(express.json());
 app.use(express.static('public'));
 
@@ -55,22 +73,56 @@ app.get('/', (req, res) => {
     message: '🎮 游戏大厅服务器',
     version: '1.0.0',
     websocket: `ws://localhost:${config.port}`,
-    docs: '/api/docs'
+    docs: '/api/docs',
+    health: '/api/health'
   });
 });
 
-app.get('/api/health', (req, res) => {
+/**
+ * 健康检查即「线上体检报告」：commit / 启动时间 / 真实注册的路由 / 近期 404。
+ * 排查「接口 404 但代码里有」时，先看这里判断线上跑的是不是最新代码。
+ */
+const healthRouter = Router();
+// 先挂载再定义 handler：这样 handler 里 listRoutes() 已经包含 GET /api/health 自己
+// （express 在请求时才读 router.stack，后加路由不会失效）
+mountRoute(app, '/api/health', healthRouter, 'health');
+healthRouter.get('/', (_req, res) => {
   res.json({
     status: 'ok',
-    timestamp: Date.now()
+    timestamp: Date.now(),
+    ...buildInfo(),
+    config: {
+      port: config.port,
+      adminPassConfigured: Boolean(config.admin_pass || process.env.ADMIN_PASS),
+    },
+    routeCount: listRoutes().length,
+    routes: listRoutes(),
+    http: getHttpStats(),
   });
 });
 
-app.use('/api/games', gameController)
-app.use('/api/oauth', oauthController)
-app.use('/api/voice-packs', voicePackController)
+// 全部业务路由都经 mountRoute 登记，保证「实际挂载」与「自诊断看到的」永远一致
+const ROUTES: [prefix: string, router: any, name: string][] = [
+  ['/api/games', gameController, 'game'],
+  ['/api/oauth', oauthController, 'oauth'],
+  ['/api/voice-packs', voicePackController, 'voicePack'],
+  ['/api/admin', adminController, 'admin'],
+  ['/api/debug', diagnosticsController, 'debug'],
+];
+for (const [prefix, router, name] of ROUTES) mountRoute(app, prefix, router, name);
+
+// 管理端静态资源：构建产物放 server/public/admin，SPA 回退到 index.html
+app.use('/admin', express.static('public/admin'))
+app.get('/admin/*', (req, res) => {
+  res.sendFile(path.resolve('public/admin/index.html'), err => {
+    if (err) {
+      httpLog.warn(`管理端未构建：${req.originalUrl}（在 admin/ 下 npm run build 后部署到 server/public/admin）`);
+      res.status(404).send('管理端未构建：在 admin/ 下 npm run build 后复制到 server/public/admin');
+    }
+  })
+})
 app.post('/api/test', (req, res) => {
-  console.log(req.body, typeof req.body)
+  httpLog.debug({ body: req.body }, 'POST /api/test')
   res.end();
   // io.to(req.body).emit('room:player-action', {})
 })
@@ -88,13 +140,15 @@ const usersMap = new Map<string, string>();
  */
 io.on('connection', async (socket: AuthSocket) => {
   const user_id = socket.user_id || '';
+  const wsLog = createLogger('ws');
 
-  console.log(`\n✅ 用户连接: ${user_id || '游客'} (${socket.id})`);
+  wsLog.info(`✅ 用户连接: ${user_id || '游客'} (${socket.id})`);
   if (user_id) {
     const socket_id = usersMap.get(user_id);
     if (socket_id) {
       const oldSocket = io.sockets.sockets.get(socket_id);
       if (oldSocket) {
+        wsLog.info(`多端登录，踢掉旧连接 user=${user_id} old=${socket_id} new=${socket.id}`);
         oldSocket.emit('user:kicked', { message: '您在另一个设备登录' })
         oldSocket.disconnect(true)
       }
@@ -123,11 +177,33 @@ io.on('connection', async (socket: AuthSocket) => {
   // 匹配处理器内部按 (user_id, game_id) 解析 player_id，连接阶段不存在唯一 player
   setupMatchingHandlers(io, socket, user_id);
 
+  // 只在 LOG_LEVEL=debug 时全量打印事件名，平时零开销（不影响线上流量）
+  if (wsLog.isLevelEnabled('debug')) {
+    socket.onAny((event: string, ...args: unknown[]) => {
+      const brief = args
+        .map(a => {
+          if (a === undefined || a === null) return String(a);
+          if (typeof a === 'function') return 'fn';
+          if (typeof a === 'object') {
+            try {
+              const text = JSON.stringify(a);
+              return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+            } catch {
+              return '[object]';
+            }
+          }
+          return String(a);
+        })
+        .join(' ');
+      wsLog.debug(`⇠ ${event} ${brief}`);
+    });
+  }
+
   /**
    * 心跳检测
    */
   socket.on('ping', (callback) => {
-    console.log('ping')
+    wsLog.debug('ping')
     callback({ timestamp: Date.now() });
   });
 
@@ -135,7 +211,7 @@ io.on('connection', async (socket: AuthSocket) => {
    * 断开连接处理
    */
   socket.on('disconnect', async (reason) => {
-    console.log(reason)
+    wsLog.info(`❌ 用户断开: ${user_id || '游客'} (${socket.id}) reason=${reason}`);
     // 游客没有用户身份，无需清理上线状态
     if (!user_id) return;
 
@@ -156,11 +232,15 @@ io.on('connection', async (socket: AuthSocket) => {
       });
     }
     io.emit('user:change', { user_id, field: 'atline', value: false, atline: false, timestamp: Date.now() });
-
-    console.log(`❌ 用户断开: ${user_id} (${socket.id})\n`);
   });
 });
 
+/**
+ * 兜底路由：
+ * - `/api/*` 未匹配 → JSON（前端能读到 message/hint，而不是「页面不存在」纯文本）
+ * - 其余 → 原行为
+ */
+app.use('/api', apiNotFound);
 app.use((req, res) => {
   if (req.path.startsWith('/lobby')) {
     res.redirect('/lobby');
@@ -168,6 +248,9 @@ app.use((req, res) => {
     res.status(404).end('页面不存在')
   }
 });
+
+// 必须最后挂：Express 四参错误中间件
+app.use(errorHandler);
 
 /**
  * 启动服务器
@@ -240,22 +323,65 @@ server.listen(config.port, async () => {
     console.error('❌ 无尽桌补人机失败（服务继续启动）:', error);
   }
 
-  console.log(`\n🚀 游戏大厅服务器启动成功!`);
-  console.log(`📍 地址: http://localhost:${config.port}`);
-  console.log(`🔌 WebSocket: ws://localhost:${config.port}`);
-  console.log(`📊 健康检查: http://localhost:${config.port}/api/health`);
-  console.log(`📈 统计信息: http://localhost:${config.port}/api/stats\n`);
+  const info = buildInfo();
+  log.info(`🚀 游戏大厅服务器启动成功  commit=${info.commit} env=${info.env} pid=${info.pid}`);
+  log.info(`📍 http://localhost:${config.port}  ·  🔌 ws://localhost:${config.port}`);
+  log.info(`📊 健康检查（含路由表/近期 404）: http://localhost:${config.port}/api/health`);
+  log.info(`🧾 已挂载 ${listRoutes().length} 条路由：${listMounts().map(m => `${m.prefix}(${m.count})`).join('  ')}`);
+  log.info(`🧪 诊断: /api/debug/routes · /api/debug/logs?token=admin_pass · /api/debug/config?token=admin_pass`);
+  log.info(`🎚 日志级别: LOG_LEVEL=${process.env.LOG_LEVEL || 'info'}${process.env.LOG_PRETTY ? ` · LOG_PRETTY=${process.env.LOG_PRETTY}` : ''}`);
+  if (!config.admin_pass && !process.env.ADMIN_PASS) {
+    log.warn('⚠️ 未配置 admin_pass：管理端（/api/admin/login）会拒绝登录，诊断端点也保持关闭');
+  }
+});
+
+/**
+ * 启动失败要说得清楚：EADDRINUSE 是最常见的"改了代码不生效"原因（旧进程还占着端口）
+ */
+server.on('error', (error: any) => {
+  if (error?.code === 'EADDRINUSE') {
+    log.error(`端口 ${config.port} 已被占用 —— 旧进程还在跑，请求会继续打到旧代码上。先 kill 旧进程再启动`);
+  } else if (error?.code === 'EACCES') {
+    log.error(`端口 ${config.port} 无权限监听（<1024 需要特权）`);
+  } else {
+    log.error('HTTP server 启动失败', error);
+  }
+  flushLogs();
+  process.exit(1);
+});
+
+/**
+ * 进程级兜底：不能让异常只留一堆乱码，必须带堆栈进日志
+ */
+process.on('uncaughtException', error => {
+  log.error('未捕获异常，进程退出', error);
+  flushLogs();
+  process.exit(1);
+});
+
+process.on('unhandledRejection', reason => {
+  log.error('未处理的 Promise 拒绝（进程继续运行）', reason);
 });
 
 /**
  * 优雅关闭
  */
-process.on('SIGINT', () => {
-  console.log('\n🛑 服务器关闭中...');
+const shutdown = (signal: string) => {
+  log.info(`🛑 收到 ${signal}，服务器关闭中...`);
   server.close(() => {
-    console.log('✅ 服务器已关闭');
+    log.info('✅ 服务器已关闭');
+    flushLogs();
     process.exit(0);
   });
-});
+  // 有长连接（Socket.io）时 close 可能迟迟不回调，兜底强制退出
+  setTimeout(() => {
+    log.warn('⚠️ 关闭超时，强制退出');
+    flushLogs();
+    process.exit(0);
+  }, 5000).unref?.();
+};
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 export default app;

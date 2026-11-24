@@ -399,6 +399,12 @@ export class RoomService {
     }
     await MRoom.updateOne({ _id: room_id }, { $set: { members: room.members.filter(m => m._id !== player_id) } });
     await MPlayer.updateOne({ _id: member._id }, { $set: { state: constant.PLAYER.STATE.online, room_id: '' } })
+    // 对局进行中踢人：必须同时把这条蛇从内存运行时里摘掉。
+    // 只删 room.members 的话，快照里还会带着它（无尽模式显示成"等待重生"的僵尸蛇），
+    // 而且它一直占着场上的位置。removePlayer 会顺带结算分数并同步库里对局成员。
+    if (room.match_id && room.status === constant.ROOM.STATUS.playing) {
+      snakeRuntimeService.removePlayer(room.match_id, player_id);
+    }
     if (member.player_type === constant.PLAYER.TYPE.robot) {
       await fetch(`${config.robot_url}/rem-robot`, {
         method: 'post',
