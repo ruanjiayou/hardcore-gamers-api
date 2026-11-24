@@ -9,6 +9,10 @@
  *   "真的压上去"必定判定；碰墙同样按半径算。
  * - 蛇头可以穿过自己的身体（自撞不死）：只有这样才敢贴着极小的圈盘旋。
  *   致命判定只来自"别人的蛇身"、"头对头"和"撞墙"。
+ * - **谁撞谁死**：压到别人蛇身的一方独自承担（被撞的一方不死）；
+ *   头对头只认"双方互相接近"的真对撞（同向并行/擦肩而过不算），
+ *   对撞时按**身长**裁决：长的活、短的死，等长才双亡。这样"两条蛇碰一下就一起死"
+ *   的闷亏基本消失，同时保留"以大打小"的对抗感。
  *
  * 两种玩法共用同一套规则：
  * - 无尽挑战（variant=endless，房间制，1–10 人共享同一片地图）：
@@ -551,11 +555,33 @@ function hitsBody(state: SnakeState, m: Move, now: number): boolean {
     // 同队豁免：队友撞到队友不算死
     if (m.s.team && other.team === m.s.team) continue;
     const path = other.path;
-    for (let i = 0; i < path.length; i += 2) {
+    // 从第 2 个采样点开始扫：前两个点属于对方的蛇头（path[0] 就是对方上一 tick 的头），
+    // 头碰头交给 stepSnake 里的"对撞裁决"（按身长判），否则这里会先把两边一起判死，
+    // 谁更长/谁有盾都没机会参与判定。
+    for (let i = 2; i < path.length; i += 2) {
       if (pointSegDist2(path[i][0], path[i][1], m.ox, m.oy, m.nx, m.ny) < SNAKE_HIT_R2) return true;
     }
   }
   return false;
+}
+
+/**
+ * 这一 tick 里两条蛇是否在互相靠近（两人间距在缩小）。
+ * 头对头只在这种"真对撞"时成立：同向并排跑、擦肩而过、已经被对方甩在身后都不算。
+ * 用移动**前**的位置做基准 —— 用移动后的位置会出现"已经交叉过去了"从而判定远离的误判。
+ */
+function approaching(a: Move, b: Move): boolean {
+  const rvx = (b.nx - b.ox) - (a.nx - a.ox);
+  const rvy = (b.ny - b.oy) - (a.ny - a.oy);
+  const dx = b.ox - a.ox;
+  const dy = b.oy - a.oy;
+  if (dx * dx + dy * dy > 1e-6) return rvx * dx + rvy * dy < 0;
+  // 上一 tick 就贴在一起了：退回用移动后的连线判断
+  const nx = b.nx - a.nx;
+  const ny = b.ny - a.ny;
+  const nd = Math.hypot(nx, ny);
+  if (nd < 1e-6) return true;
+  return (rvx * nx + rvy * ny) / nd < 0;
 }
 
 /**
@@ -677,7 +703,7 @@ export function stepSnake(
     });
   }
 
-  // 2. 碰撞判定
+  // 2. 碰撞判定：撞墙 / 压上别人的蛇身 —— 都是"谁撞谁死"，被撞的一方不受牵连
   const dead = new Set<string>();
   for (const m of moves) {
     if (
@@ -689,19 +715,38 @@ export function stepSnake(
     }
     if (hitsBody(state, m, now)) dead.add(m.s.id);
   }
-  // 头对头：两败俱伤（无敌的一方免疫）；同队之间不触发
+  // 3. 头对头：只有"双方互相接近"才算真对撞 —— 同向并行、擦肩而过都不触发，
+  //    这样并排跑的两条蛇不会因为蛇头挨得近就一起死。
+  //    裁决规则：无敌的一方胜；否则**身长更长者活**，等长才两败俱伤。
+  //    已经因为撞墙/撞身体阵亡的一方不再连带对方（他撞了别人，自己担着）。
   for (let i = 0; i < moves.length; i++) {
     for (let j = i + 1; j < moves.length; j++) {
       const a = moves[i];
       const b = moves[j];
       if (dist(a.nx, a.ny, b.nx, b.ny) >= SNAKE_HEAD_RADIUS * 2) continue;
       if (a.s.team && a.s.team === b.s.team) continue;
-      if ((a.s.invincibleUntil || 0) <= now) dead.add(a.s.id);
-      if ((b.s.invincibleUntil || 0) <= now) dead.add(b.s.id);
+      if (!approaching(a, b)) continue;
+      // 已经死的一方不参与对撞结算：避免"我撞了他的身体死了，还顺手把他带走"
+      if (dead.has(a.s.id) || dead.has(b.s.id)) continue;
+      const aShielded = (a.s.invincibleUntil || 0) > now;
+      const bShielded = (b.s.invincibleUntil || 0) > now;
+      if (aShielded && bShielded) continue;
+      if (aShielded) { dead.add(b.s.id); continue; }
+      if (bShielded) { dead.add(a.s.id); continue; }
+      const la = a.s.length || 0;
+      const lb = b.s.length || 0;
+      if (Math.abs(la - lb) < 0.5) {
+        dead.add(a.s.id);
+        dead.add(b.s.id);
+      } else if (la > lb) {
+        dead.add(b.s.id);
+      } else {
+        dead.add(a.s.id);
+      }
     }
   }
 
-  // 3. 应用移动（含死亡处理：死亡时留下尸体残骸）
+  // 4. 应用移动（含死亡处理：死亡时留下尸体残骸）
   for (const m of moves) {
     const s = m.s;
     if (dead.has(s.id)) {
@@ -720,10 +765,10 @@ export function stepSnake(
     truncatePath(s);
   }
 
-  // 4. 磁铁吸附（先吸附再判定吃，否则拉过来的食物要等下一 tick 才入口）
+  // 5. 磁铁吸附（先吸附再判定吃，否则拉过来的食物要等下一 tick 才入口）
   applyMagnet(state, now, dt);
 
-  // 5. 吃食物 / 残骸 / 道具
+  // 6. 吃食物 / 残骸 / 道具
   for (const m of moves) {
     const s = m.s;
     if (dead.has(s.id)) continue;
@@ -751,13 +796,13 @@ export function stepSnake(
 
   state.tick++;
 
-  // 6. 无尽模式：对局永不结束。死掉的蛇保持 dead 状态等玩家选择
+  // 7. 无尽模式：对局永不结束。死掉的蛇保持 dead 状态等玩家选择
   //    （重生走 respawnSnake 指令，退出走房间 leave），这里不做自动重生。
   if (variant === 'endless') {
     return { died, ate, respawned: [], over: false };
   }
 
-  // 7. 团队模式：一支队伍全员出局即淘汰；只剩一支队伍时该队获胜。
+  // 8. 团队模式：一支队伍全员出局即淘汰；只剩一支队伍时该队获胜。
   //    队伍总积分用于同分时的决胜与"全灭"场景。
   const remain = state.snakes.filter(s => s.alive);
   const teams = new Set(state.snakes.map(s => s.team).filter(Boolean));
@@ -775,7 +820,7 @@ export function stepSnake(
     return { died, ate, respawned: [], over };
   }
 
-  // 8. 无队伍模式（兼容旧对局）：只剩一条蛇 → 它赢；全灭 → 分数最高者，同分平局
+  // 9. 无队伍模式（兼容旧对局）：只剩一条蛇 → 它赢；全灭 → 分数最高者，同分平局
   if (remain.length === 1) {
     state.status = 'over';
     state.winner = remain[0].id;

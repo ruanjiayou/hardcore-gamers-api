@@ -289,6 +289,12 @@ export class SnakeRuntimeService {
       if (!basePlayers.some((p: any) => p._id === player_id)) {
         rt.base = { ...rt.base, players: [...basePlayers, memberSnapshot] };
       }
+      // 先按 _id 清掉旧记录再追加：同一玩家反复进出/刷新会重复写入，
+      // 对局里留下 N 条同 _id 记录，重启按 curr_state.players 重建运行时就会刷出多条幽灵蛇
+      await MMatch.updateOne(
+        { _id: rt.match_id },
+        { $pull: { players: { _id: player_id }, 'curr_state.players': { _id: player_id } } } as any,
+      );
       await MMatch.updateOne(
         { _id: rt.match_id },
         {
@@ -318,6 +324,16 @@ export class SnakeRuntimeService {
     // 无论从哪条路径被移除，都先把这一命的分数记榜（$max 幂等）
     void this.commitScore(rt, player_id);
     rt.state.snakes.splice(idx, 1);
+    // 库里的对局成员也要跟着清：只删内存不删库，服务端一重启按 curr_state.players
+    // 重建运行时就会给已经离场的人刷出一条幽灵蛇（别人看得见、撞得到，本人早退出了）
+    const basePlayers: any[] = Array.isArray((rt.base as any)?.players) ? (rt.base as any).players : [];
+    if (basePlayers.length) {
+      rt.base = { ...rt.base, players: basePlayers.filter((p: any) => p._id !== player_id) } as any;
+    }
+    void MMatch.updateOne(
+      { _id: rt.match_id },
+      { $pull: { players: { _id: player_id }, 'curr_state.players': { _id: player_id } } } as any,
+    ).catch(error => console.log('❌ 移出对局成员失败:', error));
     this.broadcast(rt);
     return true;
   }

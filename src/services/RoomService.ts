@@ -160,6 +160,16 @@ export class RoomService {
       if (!snakeRuntimeService.has(room.match_id)) {
         const match = await MMatch.findById(room.match_id).lean(true) as any;
         if (match && match.status === constant.MATCH.STATUS.playing) {
+          // 只按"仍在房间里的成员"重建：离场玩家的记录如果还残留在对局文档里
+          // （历史脏数据 / 旧代码没清），直接 spawn 会给已经退出的人刷出一条幽灵蛇
+          const memberIds = new Set((room.members || []).map((m: any) => String(m._id)));
+          const currPlayers: any[] = match.curr_state?.players || [];
+          const alive = currPlayers.filter((p: any) => memberIds.has(String(p._id)));
+          if (alive.length !== currPlayers.length) {
+            match.curr_state = { ...match.curr_state, players: alive };
+            void MMatch.updateOne({ _id: match._id }, { $set: { 'curr_state.players': alive } } as any)
+              .catch((error: any) => console.log('❌ 清理对局幽灵成员失败:', error));
+          }
           snakeRuntimeService.spawn(match);
           console.log(`🐍 房间 ${room_id} 的运行时缺失，已按库里局面重建 match=${room.match_id}`);
         }

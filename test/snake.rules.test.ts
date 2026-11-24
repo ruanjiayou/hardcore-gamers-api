@@ -226,7 +226,7 @@ describe('贪吃蛇规则（连续像素）', () => {
     expect(miss.snakes.find(s => s.id === 'a')?.alive).toBe(true);
   });
 
-  test('头对头：双双淘汰，按分数决胜', () => {
+  test('头对头：等长才双双淘汰，按分数决胜', () => {
     const state = makeState([
       straight('a', 300, 300, 60),
       snakeFromPath('b', [[360, 300], [420, 300]]), // 头朝左
@@ -238,6 +238,40 @@ describe('贪吃蛇规则（连续像素）', () => {
     expect(res.over).toBe(true);
     expect(state.winner).toBe('a');
     expect(snakeScores(state)).toEqual({ a: 30, b: 10 });
+  });
+
+  test('头对头：长的活、短的死（不再两条一起死）', () => {
+    // a 身长 60，b 身长 120，两头对撞
+    const state = makeState([
+      straight('a', 300, 300, 60),
+      snakeFromPath('b', [[360, 300], [480, 300]]),
+    ]);
+    const res = stepSnake(state, { dt: 0.2, now: 0 });
+    expect(res.died).toEqual(['a']);
+    expect(state.snakes.find(s => s.id === 'b')?.alive).toBe(true);
+  });
+
+  test('同向并行：蛇头挨得再近也不算对撞', () => {
+    // 两条蛇都朝右、蛇头横向只差 24px（< 2×SNAKE_HEAD_RADIUS=26，旧规则判"头对头"双亡），
+    // 但身体中心线相距 24 > SNAKE_HIT_R(22.6)，并没有真的压在一起 → 谁都不该死。
+    const state = makeState([
+      straight('a', 300, 300, 60),
+      straight('b', 300, 324, 60),
+    ], [], { variant: 'endless' });
+    const res = stepSnake(state, { dt: 0.2, now: 0 });
+    expect(res.died).toEqual([]);
+  });
+
+  test('压上对方身体只死撞的一方，不连带被撞的', () => {
+    // b 的蛇头停在 a 正前方（距离 < 26px，旧规则会判定"头对头"双亡），
+    // 但 b 往上走、根本没朝 a 靠近 —— 是 a 主动压上了 b 的身体
+    const state = makeState([
+      straight('a', 300, 300, 60),
+      snakeFromPath('b', [[350, 300], [350, 420], [300, 460]]),
+    ], [], { variant: 'endless' });
+    const res = stepSnake(state, { dt: 0.2, now: 0 });
+    expect(res.died).toEqual(['a']);
+    expect(state.snakes.find(s => s.id === 'b')?.alive).toBe(true);
   });
 
   test('无敌只免疫别人；蛇头可以穿过自己的身体', () => {
