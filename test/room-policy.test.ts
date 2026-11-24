@@ -4,11 +4,116 @@ import {
   canDisbandRoom,
   canStartGame,
   canUpdateSettings,
+  canKickMember,
+  canTransferOwner,
+  hasHumanOwner,
+  normalizeOwner,
+  pickTempOwner,
   resolveLeaveAction,
+  shouldTakeOwnership,
 } from '../src/utils/roomPolicy';
 
 const human = (id: string, member_type = 'player') => ({ _id: id, member_type, player_type: 'player' });
 const robot = (id: string, member_type = 'player') => ({ _id: id, member_type, player_type: 'robot' });
+
+describe('房主归属（SB-039：私有房主 vs 官方临时房主）', () => {
+  test('官方临时房主 = 房内第一位真人对战玩家，跳过人机与观战者', () => {
+    expect(pickTempOwner([robot('r1'), human('v1', 'viewer'), human('p2'), human('p3')])).toBe('p2');
+    expect(pickTempOwner([robot('r1')])).toBe('');
+    expect(pickTempOwner([])).toBe('');
+  });
+
+  test('人机永远不能成为房主：进房不接任', () => {
+    // 空官方桌：人机进来不写 owner_id
+    expect(shouldTakeOwnership({ official: true, members: [] }, robot('r1'))).toBe(false);
+    // 空私有房：人机同样不接
+    expect(shouldTakeOwnership({ official: false, members: [] }, robot('r1'))).toBe(false);
+    // 观战者也不接
+    expect(shouldTakeOwnership({ official: true, members: [] }, human('v1', 'viewer'))).toBe(false);
+  });
+
+  test('官方空桌由第一位真人接任；已有真人房主时下一位真人不再夺权', () => {
+    const empty = { official: true, members: [] as any[] };
+    expect(shouldTakeOwnership(empty, human('p1'))).toBe(true);
+    const owned = { official: true, owner_id: 'p1', members: [human('p1'), robot('r1')] };
+    expect(shouldTakeOwnership(owned, human('p2'))).toBe(false);
+  });
+
+  test('官方桌历史脏数据（人机房主）：下一位真人接任', () => {
+    const room = { official: true, owner_id: 'r1', members: [robot('r1')] };
+    expect(hasHumanOwner(room)).toBe(false);
+    expect(shouldTakeOwnership(room, human('p1'))).toBe(true);
+  });
+
+  test('normalizeOwner：人机房主 / 悬空房主都要校正，合法房主返回 null', () => {
+    // 人机房主 + 房里有真人 → 交给第一位真人
+    expect(normalizeOwner({
+      official: true,
+      owner_id: 'r1',
+      members: [robot('r1'), human('p2'), human('p3')],
+    })).toBe('p2');
+    // 人机房主 + 房里没真人 → 置空
+    expect(normalizeOwner({ official: true, owner_id: 'r1', members: [robot('r1')] })).toBe('');
+    // 房主已不在成员表（悬空）→ 交给第一位真人
+    expect(normalizeOwner({ official: true, owner_id: 'gone', members: [human('p2')] })).toBe('p2');
+    // 正常：不动
+    expect(normalizeOwner({ official: true, owner_id: 'p1', members: [human('p1')] })).toBeNull();
+    // 空房主：不动
+    expect(normalizeOwner({ official: true, owner_id: '', members: [] })).toBeNull();
+  });
+});
+
+describe('踢人权限', () => {
+  const privateRoom = { official: false, owner_id: 'p1', members: [human('p1'), human('p2'), robot('r1')] };
+  const officialRoom = { official: true, owner_id: 'p1', members: [human('p1'), robot('r1')] };
+
+  test('私有房主不能被踢（管理端也不行），其余成员可以', () => {
+    expect(canKickMember(privateRoom, 'p1').ok).toBe(false);
+    expect(canKickMember(privateRoom, 'p1').reason).toContain('私有房主');
+    expect(canKickMember(privateRoom, 'p2').ok).toBe(true);
+    expect(canKickMember(privateRoom, 'r1').ok).toBe(true);
+  });
+
+  test('官方房临时房主可被踢（这正是管理端踢不掉人机房主的根因）', () => {
+    expect(canKickMember(officialRoom, 'p1').ok).toBe(true);
+    expect(canKickMember(officialRoom, 'r1').ok).toBe(true);
+  });
+
+  test('房间内踢人必须是房主；管理端（不传 by）豁免身份但保留业务约束', () => {
+    expect(canKickMember(privateRoom, 'p2', 'p2').ok).toBe(false);
+    expect(canKickMember(privateRoom, 'p2', 'p2').reason).toContain('房主');
+    expect(canKickMember(privateRoom, 'p2', 'p1').ok).toBe(true);
+    // 官方房：临时房主可踢人
+    expect(canKickMember(officialRoom, 'r1', 'p1').ok).toBe(true);
+    // 不存在的人
+    expect(canKickMember(officialRoom, 'nobody').ok).toBe(false);
+  });
+});
+
+describe('转让房主权限', () => {
+  const privateRoom = { official: false, owner_id: 'p1', members: [human('p1'), human('p2'), robot('r1'), human('v1', 'viewer')] };
+
+  test('私有房主可以转让给房内的非人机对战玩家', () => {
+    expect(canTransferOwner(privateRoom, 'p2', 'p1').ok).toBe(true);
+    expect(canTransferOwner(privateRoom, 'p2').ok).toBe(true);
+  });
+
+  test('不能转给人机、观战者或房外的人（否则房间没人能开局）', () => {
+    expect(canTransferOwner(privateRoom, 'r1', 'p1').reason).toContain('人机');
+    expect(canTransferOwner(privateRoom, 'v1', 'p1').reason).toContain('观战');
+    expect(canTransferOwner(privateRoom, 'nobody', 'p1').reason).toContain('不在房间');
+  });
+
+  test('只有现房主能转让', () => {
+    expect(canTransferOwner(privateRoom, 'r1', 'p2').ok).toBe(false);
+    expect(canTransferOwner(privateRoom, 'p2', 'p2').reason).toContain('只有房主');
+  });
+
+  test('官方房只有临时房主，不存在转让', () => {
+    const room = { official: true, owner_id: 'p1', members: [human('p1'), human('p2')] };
+    expect(canTransferOwner(room, 'p2', 'p1').reason).toContain('临时房主');
+  });
+});
 
 describe('观战开关', () => {
   test('默认允许观战，显式 false 才禁止', () => {

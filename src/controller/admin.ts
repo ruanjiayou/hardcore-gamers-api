@@ -275,8 +275,9 @@ router.post('/rooms/:id/robots', wrap(async (req, res) => {
 }));
 
 router.delete('/rooms/:id/players/:pid', wrap(async (req, res) => {
-  const ok = await roomService.kickPlayer(req.params.id, req.params.pid);
-  if (!ok) throw new Error('踢人失败（成员不存在或对方是房主）');
+  // 管理端操作：无"操作者"身份（`by` 不传），但业务约束照旧 —— 私有房主不可被踢
+  const kicked = await roomService.kickPlayer(req.params.id, req.params.pid);
+  if (!kicked.ok) throw new Error(`踢人失败：${kicked.reason || '未知原因'}`);
   res.json({ code: 0, message: '已移出房间' });
 }));
 

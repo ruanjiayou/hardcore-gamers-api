@@ -11,7 +11,15 @@ import config from '../config';
 import constant, { MemberType, PlayerType } from '../constant'
 import GameLogics from '../games'
 import { normalizeTimeControl, buildMatchTimeControl } from '../utils/timeControl'
-import { canSpectate, resolveLeaveAction } from '../utils/roomPolicy'
+import {
+  canKickMember,
+  canSpectate,
+  canTransferOwner,
+  normalizeOwner,
+  pickTempOwner,
+  resolveLeaveAction,
+  shouldTakeOwnership,
+} from '../utils/roomPolicy'
 import { snakeRuntimeService } from './SnakeRuntimeService';
 
 export class RoomService {
@@ -102,6 +110,17 @@ export class RoomService {
         );
         room.members = room.members.filter((m: any) => aliveIds.has(String(m._id)));
         console.log(`🧹 房间 ${room_id} 清理 ${ghosts.length} 个悬空成员（玩家记录已不存在）`);
+      }
+    }
+
+    // 房主不变量自愈（SB-039）：官方房只有临时房主，owner_id 必须是房内的真人对战玩家。
+    // 历史脏数据里人机当过房主（管理端永远踢不掉它），这里顺手纠正成「第一位真人」或置空。
+    if (room.official) {
+      const wantOwner = normalizeOwner(room as any);
+      if (wantOwner !== null && wantOwner !== room.owner_id) {
+        await MRoom.updateOne({ _id: room_id }, { $set: { owner_id: wantOwner } });
+        console.log(`🧹 房间 ${room_id} 的临时房主由 ${room.owner_id || '空'} 校正为 ${wantOwner || '空'}`);
+        room.owner_id = wantOwner;
       }
     }
 
@@ -295,8 +314,11 @@ export class RoomService {
     // 表现为"补了 5 个人机，房间里只剩 3 个"。
     // 'members._id': {$ne} 保证同一个人重复进房不会插入两条。
     const update: Record<string, any> = { $push: { members: newPlayer } };
-    // 空房由第一位对战玩家接任房主（官方房的"桌长"）；观战者不占房主位
-    if (room.members.length === 0 && data.type === constant.MEMBER.TYPE.player) {
+    // 房主（SB-039）：
+    // - 私有房：创建者已在 createRoomWithOwner 里写入，这里只兜底空壳房
+    // - 官方房：只有「临时房主」= 房内第一位真人对战玩家；人机永远不接任
+    //   （人机进房传的 member_type 也是 'player'，不按 player_type 过滤会让它当上房主）
+    if (shouldTakeOwnership(room as any, newPlayer as any)) {
       update.$set = { owner_id: player._id };
     }
     await MRoom.updateOne({ _id: room._id, 'members._id': { $ne: player._id } }, update);
@@ -388,16 +410,24 @@ export class RoomService {
     return { ok: true, dissolved: false };
   }
 
-  async kickPlayer(room_id: string, player_id: string) {
+  /**
+   * 踢人出房。规则见 `utils/roomPolicy.canKickMember`：
+   * - 私有房主不可被踢（要么转让，要么解散整个房间）
+   * - 官方房只有临时房主，临时房主同样可被踢，踢后房主交给下一位真人
+   * - `by` 为空表示管理端/系统操作（豁免"必须是房主"的身份校验）
+   */
+  async kickPlayer(room_id: string, player_id: string, by?: string): Promise<{ ok: boolean; reason?: string }> {
     const room = await MRoom.findById(room_id).lean(true);
-    if (!room) {
-      return false;
-    }
-    const member = room.members.find(m => m._id === player_id);
-    if (!member || player_id === room.owner_id) {
-      return false;
-    }
-    await MRoom.updateOne({ _id: room_id }, { $set: { members: room.members.filter(m => m._id !== player_id) } });
+    if (!room) return { ok: false, reason: '房间不存在' };
+    const check = canKickMember(room as any, player_id, by);
+    if (!check.ok) return { ok: false, reason: check.reason };
+    const member = room.members.find(m => m._id === player_id)!;
+
+    const remain = room.members.filter(m => m._id !== player_id);
+    const set: Record<string, any> = { members: remain, updatedAt: new Date() };
+    // 房主被踢（官方房临时房主 / 历史人机房主）→ 立刻交给下一位真人，没有真人就置空
+    if (player_id === room.owner_id) set.owner_id = pickTempOwner(remain);
+    await MRoom.updateOne({ _id: room_id }, { $set: set });
     await MPlayer.updateOne({ _id: member._id }, { $set: { state: constant.PLAYER.STATE.online, room_id: '' } })
     // 对局进行中踢人：必须同时把这条蛇从内存运行时里摘掉。
     // 只删 room.members 的话，快照里还会带着它（无尽模式显示成"等待重生"的僵尸蛇），
@@ -418,15 +448,16 @@ export class RoomService {
         console.log(err);
       });
     }
-    return true;
+    return { ok: true };
   }
-  async transferOwner(room_id: string, player_id: string) {
+  /** 转让房主：仅私有房主可转让，目标必须是房内的非人机对战玩家（SB-039） */
+  async transferOwner(room_id: string, player_id: string, by?: string): Promise<{ ok: boolean; reason?: string }> {
     const room = await MRoom.findById(room_id).lean(true);
-    if (!room) {
-      return false;
-    }
-    await MRoom.updateOne({ _id: room_id }, { $set: { owner_id: player_id } });
-    return true;
+    if (!room) return { ok: false, reason: '房间不存在' };
+    const check = canTransferOwner(room as any, player_id, by);
+    if (!check.ok) return { ok: false, reason: check.reason };
+    await MRoom.updateOne({ _id: room_id }, { $set: { owner_id: player_id, updatedAt: new Date() } });
+    return { ok: true };
   }
   /**
    * 开始游戏

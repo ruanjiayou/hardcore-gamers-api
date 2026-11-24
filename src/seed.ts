@@ -13,6 +13,7 @@ import { MGame, MPlayer, MRoom, MUser, MVoicePack } from './models';
 import config from './config';
 import redis from './utils/redis';
 import { SEED_GAMES, SEED_ROBOTS, SEED_VOICE_PACKS, robotPlayerSeed, officialRoomSeeds } from './seed.data';
+import { normalizeOwner } from './utils/roomPolicy';
 
 export { SEED_GAMES, SEED_ROBOTS, SEED_VOICE_PACKS };
 
@@ -127,11 +128,20 @@ export async function seedOfficialRooms(): Promise<SeedResult> {
         const seatsChanged =
           wantSeats.length > 0 &&
           JSON.stringify(existing.seats || []) !== JSON.stringify(wantSeats);
-        if (numbersChanged || seatsChanged) {
+        // 房主校正（SB-039）：官方房只有「临时房主」，owner_id 必须是房内的真人对战玩家。
+        // 历史脏数据里人机当过房主（种子补人机时第一台机器人在空桌接了房主位），
+        // 那种房主管理端永远踢不掉，必须在启动时纠正成第一位真人（没有真人则置空）。
+        const wantOwner = normalizeOwner(existing as any);
+        const ownerChanged = wantOwner !== null && wantOwner !== existing.owner_id;
+        if (numbersChanged || seatsChanged || ownerChanged) {
           const patch: Record<string, unknown> = { updatedAt: new Date() };
           if (numbersChanged) patch.numbers = wantNumbers;
           if (seatsChanged) patch.seats = wantSeats;
+          if (ownerChanged) patch.owner_id = wantOwner;
           await MRoom.updateOne({ _id: room._id }, { $set: patch });
+          if (ownerChanged) {
+            console.log(`🏢 官方房 ${room._id} 临时房主校正：${existing.owner_id || '空'} → ${wantOwner || '空'}`);
+          }
         }
       }
       kept++;

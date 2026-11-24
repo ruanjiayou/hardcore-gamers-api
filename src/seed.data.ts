@@ -200,6 +200,8 @@ export function officialRoomSeeds(): IRoom[] {
           game_id: game._id,
           name: `${game.title} · ${group.label} ${i} 号桌`,
           status: RoomStatus.waiting,
+          // 官方桌没有固定房主，只有运行期的「临时房主」（房内第一位真人对战玩家，SB-039）。
+          // 人机永远不接房主位，否则管理端踢不掉它、房间也没人能解散/开局。
           owner_id: '',
           members: [],
           // 团队模式预置座位（6 队 × 5 人）；其它玩法不占座

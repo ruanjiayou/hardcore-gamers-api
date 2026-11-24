@@ -1,9 +1,13 @@
 /**
  * 房间权限与流转决策 - 纯函数，无 DB 依赖，便于单测。
  *
- * 固定房语义：
- * - 官方公共房（official）：任何人只能退出、不可解散；房主离开把房主转让给下一位真人玩家；
- *   没有真人时房间重置保留（空桌复用）。
+ * 房主语义（SB-039）：
+ * - 私有房：**创建者**才是房主，可以转让（只能转给非人机对战玩家）、可以直接解散；
+ *   房主离开时转让给非人机玩家，没有就解散。
+ * - 官方房：**只有临时房主**（房内第一位真人对战玩家），不可解散、不转让，只能离开；
+ *   离开/被踢后交给下一位真人，没有真人则置空，空桌等下一批人。
+ * - 人机（`player_type === 'robot'`）**永远不能持有房主**：人机进房传的
+ *   `member_type` 也是 `player`，只看 member_type 会让第一台人机在空桌上当房主。
  * - 自建房：仅房主（创建者/持有者）可解散；房主离开即解散。
  * - 单人快开房（transient）：不进房间列表，随时可离开，离开即销毁（分数已实时上报）。
  * - 观战：room.allowSpectate === false 时禁止以 viewer 身份进入。
@@ -37,9 +41,88 @@ export function canSpectate(room: Pick<PolicyRoom, 'allowSpectate'>): boolean {
   return room.allowSpectate !== false
 }
 
-/** 能否解散房间：官方房永远不行；自建房仅房主 */
+/** 可否成为房主的人：真人对战玩家（跳过人机与观战者） */
+function canHoldOwnership(m?: PolicyMember | null): boolean {
+  return !!m && m.player_type !== constant.PLAYER.TYPE.robot && m.member_type === constant.MEMBER.TYPE.player
+}
+
+/** 房间内第一位有资格当房主的人：官方房的「临时房主」候选，也是房主交接的唯一顺序 */
+export function pickTempOwner(members?: PolicyMember[]): string {
+  return (members || []).find(canHoldOwnership)?._id || ''
+}
+
+/** 当前 owner_id 是否是一个合法的真人对战玩家（人机房主 / 悬空房主都算否） */
+export function hasHumanOwner(room: PolicyRoom): boolean {
+  if (!room.owner_id) return false
+  return canHoldOwnership((room.members || []).find(m => m._id === room.owner_id))
+}
+
+/**
+ * 进房者是否应该接任房主。
+ * - 私有房：创建时已写入（`createRoomWithOwner`），这里只兜底"房主不在成员表"的空壳房
+ * - 官方房：只有临时房主 —— 目前没有真人房主时，由第一位真人对战玩家接任
+ */
+export function shouldTakeOwnership(room: PolicyRoom, joiner: PolicyMember): boolean {
+  if (!canHoldOwnership(joiner)) return false
+  if (room.official) return !hasHumanOwner(room)
+  return (room.members || []).length === 0 || !room.owner_id
+}
+
+/**
+ * 房主不变量校正：`owner_id` 必须是空的或房内的真人对战玩家。
+ * 返回需要写入的新值；`null` 表示不需要改动。
+ * 用于 seed 启动校正与 `reconcileRoom` 自愈 —— 历史脏数据里人机当过房主（SB-039）。
+ */
+export function normalizeOwner(room: PolicyRoom): string | null {
+  if (!room.owner_id) return null
+  if (hasHumanOwner(room)) return null
+  return pickTempOwner(room.members)
+}
+
+export interface KickDecision {
+  ok: boolean
+  reason?: string
+}
+
+/**
+ * 能否把某人踢出房间。
+ * @param by 操作者 player_id；`undefined` 表示管理端/系统操作（无身份，豁免"必须是房主"）
+ */
+export function canKickMember(room: PolicyRoom, targetId: string, by?: string): KickDecision {
+  const target = (room.members || []).find(m => m._id === targetId)
+  if (!target) return { ok: false, reason: '成员不存在' }
+  // 私有房主不能被踢：要么他自己解散，要么先转让 —— 否则房主凭空消失、房间没人能管
+  if (!room.official && targetId === room.owner_id) {
+    return { ok: false, reason: '私有房主不能被踢出，请先转让房主或解散房间' }
+  }
+  if (by !== undefined && by !== room.owner_id) {
+    return { ok: false, reason: '只有房主可以踢人' }
+  }
+  return { ok: true }
+}
+
+/** 能否把房主转给 target：仅私有房主可转让，且目标必须是房内的非人机对战玩家 */
+export function canTransferOwner(room: PolicyRoom, targetId: string, by?: string): KickDecision {
+  if (room.official) {
+    return { ok: false, reason: '官方房只有临时房主，不能转让（进出房自动交接）' }
+  }
+  if (by !== undefined && by !== room.owner_id) {
+    return { ok: false, reason: '只有房主可以转让房主' }
+  }
+  const target = (room.members || []).find(m => m._id === targetId)
+  if (!target) return { ok: false, reason: '对方不在房间里' }
+  if (target.player_type === constant.PLAYER.TYPE.robot) {
+    return { ok: false, reason: '不能把房主转让给人机' }
+  }
+  if (target.member_type !== constant.MEMBER.TYPE.player) {
+    return { ok: false, reason: '不能把房主转让给观战者' }
+  }
+  return { ok: true }
+}
+
+/** 能否解散房间：官方房只有临时房主，永远不行；自建房仅房主 */
 export function canDisbandRoom(room: PolicyRoom, requesterPlayerId: string): Decision {
-  if (room.official) return { ok: false, reason: '官方房间不能解散，请退出房间' }
+  if (room.official) return { ok: false, reason: '官方房只有临时房主，不能解散，请退出房间' }
   if (!requesterPlayerId) return { ok: false, reason: '无法确认你的身份' }
   if (room.owner_id && room.owner_id !== requesterPlayerId) return { ok: false, reason: '只有房主可以解散房间' }
   return { ok: true }
@@ -98,10 +181,7 @@ export function resolveLeaveAction(room: PolicyRoom, player_id: string): LeaveDe
   const remain = (room.members || []).filter(m => m._id !== player_id)
   const hasHuman = remain.some(m => m.player_type !== constant.PLAYER.TYPE.robot)
   // 可接手房主的真人对战玩家：跳过人机与观战者（观战者无法开局，接手会把房间卡死）
-  const nextHumanOwner = remain.find(m =>
-    m.player_type !== constant.PLAYER.TYPE.robot &&
-    m.member_type === constant.MEMBER.TYPE.player
-  )?._id
+  const nextHumanOwner = pickTempOwner(remain) || undefined
 
   if (room.official) {
     // 无尽竞技房是常驻房：人机常驻场上陪玩，真人离开只走自己，

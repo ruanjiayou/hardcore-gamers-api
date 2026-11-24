@@ -216,9 +216,12 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
 
     const { room_id, player_id } = data;
     try {
-      const success = await roomService.kickPlayer(room_id, player_id);
+      // 发起人必须是房主（官方房的临时房主同样有效），服务端用 canKickMember 强校验
+      const room = await roomService.getRoomById(room_id);
+      const me = room && await MPlayer.findOne({ user_id, game_id: room.game_id }).lean(true);
+      const result = await roomService.kickPlayer(room_id, player_id, me?._id || '');
 
-      if (!success) {
+      if (!result.ok) {
         callback(false);
         return;
       }
@@ -244,8 +247,11 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
 
     const { room_id, player_id } = data;
     try {
-      const success = await roomService.transferOwner(room_id, player_id);
-      if (!success) {
+      // 只有现房主能转让（官方房只有临时房主，直接拒绝），目标必须是非人机对战玩家
+      const room = await roomService.getRoomById(room_id);
+      const me = room && await MPlayer.findOne({ user_id, game_id: room.game_id }).lean(true);
+      const result = await roomService.transferOwner(room_id, player_id, me?._id || '');
+      if (!result.ok) {
         return callback(false);
       }
       callback(true);
