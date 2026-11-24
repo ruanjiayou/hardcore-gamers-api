@@ -508,6 +508,8 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       }
 
       const winner_id = room.members.filter(m => m.member_type === constant.MEMBER.TYPE.player).map(m => m._id).find(_id => _id !== data.player_id)
+      // 认输记一次"逃跑"：统计口径统一为 {matches, winners, draws, flees}
+      await MPlayer.updateOne({ _id: player._id }, { $inc: { 'stats.flees': 1 } });
       await roomService.gameover(data.room_id, data.match_id, winner_id as string)
       // 其他实时对局兜底：结算后停掉 tick，避免继续推进并二次结算
       snakeRuntimeService.stop(data.match_id);

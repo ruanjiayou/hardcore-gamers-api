@@ -266,7 +266,8 @@ export function robotPlayerSeed(robot: SeedRobot) {
     status: 1,
     state: PlayerState.online,
     atline: true,
-    stats: { games: 0, winners: 0, draws: 0, flees: 0, matches: 0 },
+    // 统计口径统一为 {matches, winners, draws, flees}（旧字段 games/winnings 已废弃）
+    stats: { matches: 0, winners: 0, draws: 0, flees: 0 },
     createdAt: new Date(),
     updatedAt: new Date(),
   };

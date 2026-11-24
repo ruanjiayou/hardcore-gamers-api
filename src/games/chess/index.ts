@@ -66,7 +66,7 @@ export default class Chess {
 
     await MMatch.updateOne({ _id: match._id }, {
       $set: { curr_state: nextState, updatedAt: new Date() },
-      $push: { movements: { ...movement, timestamp: Date.now() } },
+      $push: { movements: { ...movement, board: nextState.board, timestamp: Date.now() } },
     });
 
     return {

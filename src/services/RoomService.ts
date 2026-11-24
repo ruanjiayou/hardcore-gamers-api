@@ -628,6 +628,8 @@ export class RoomService {
           updatedAt: new Date(),
         }
       });
+    // 平局：没有任何胜者、也没有显式分数表（单人游戏带 scores，不算平局）
+    const isDraw = winnerIds.size === 0 && !scores;
     await MPlayer.bulkWrite(room.members.map(m => {
       const isPlayer = m.member_type === MemberType.player;
       // 单人游戏（scoreMode='max'）：score 取历史最高分，与其他对局累加语义区分开。
@@ -650,8 +652,9 @@ export class RoomService {
             // $set 与 $inc 必须分层，混用会触发 MongoServerError: Unknown modifier
             $inc: {
               ...(isPlayer ? {
-                'stats.games': 1,
+                // 统计字段统一：{matches, winners, draws, flees}（见 utils/stats.ts）
                 'stats.matches': 1,
+                'stats.draws': isDraw ? 1 : 0,
                 // 平局（winner 为空且无显式分数）不再扣分——修复原有不一致：
                 // MMatch.players[].score 写 0 而 MPlayer.score 却 -1。
                 ...(useMax ? {} : { score: scoreOf(m._id) }),

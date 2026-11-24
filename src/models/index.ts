@@ -77,6 +77,8 @@ export const MMatch = mongoose.model<IMatch>('matches', new mongoose.Schema({
 const userSchema = new mongoose.Schema<IUser>({
   _id: String,
   name: String,
+  // 展示昵称：个人中心可改；缺省等于 name（读取时兜底）
+  nickname: String,
   pass: String,
   avatar: String,
   email: String,

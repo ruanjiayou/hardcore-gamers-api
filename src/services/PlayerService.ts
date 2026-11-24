@@ -10,6 +10,7 @@ import config from '../config';
 import { isEmpty, sumBy } from 'lodash';
 import constant, { PlayerState, RoomStatus } from '../constant';
 import { isDanglingRoomRef, isZombieMatch, isZombieRoom } from '../utils/roomPolicy';
+import { EMPTY_PLAYER_STATS } from '../utils/stats';
 
 export class PlayerService {
 
@@ -192,12 +193,8 @@ export class PlayerService {
       avatar: user.avatar,
       createdAt: time,
       updatedAt: time,
-      stats: {
-        games: 0,
-        winnings: 0,
-        win_rate: 0,
-        flee_rate: 0,
-      }
+      // 统计字段统一口径（matches/winners/draws/flees），旧字段 games/winnings 只在读旧数据时兼容
+      stats: { ...EMPTY_PLAYER_STATS },
     });
 
     console.log(`✨ 新玩家创建: ${player.nickname} (${player._id}) user=${user_id} game=${game.slug || game._id}`);

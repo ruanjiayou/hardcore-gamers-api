@@ -50,7 +50,7 @@ export default class Othello {
         curr_state.curr_turn = '';
         await MMatch.updateOne({ _id: match._id }, {
           $set: { curr_state, updatedAt: new Date() },
-          $push: { movements: { ...movement, timestamp: Date.now() } },
+          $push: { movements: { ...movement, board: curr_state.board, timestamp: Date.now() } },
         });
         return {
           success: true,
@@ -63,7 +63,7 @@ export default class Othello {
       curr_state.curr_turn = nextTurn;
       await MMatch.updateOne({ _id: match._id }, {
         $set: { curr_state, updatedAt: new Date() },
-        $push: { movements: { ...movement, timestamp: Date.now() } },
+        $push: { movements: { ...movement, board: curr_state.board, timestamp: Date.now() } },
       });
       return {
         success: true,
@@ -98,7 +98,7 @@ export default class Othello {
 
     await MMatch.updateOne({ _id: match._id }, {
       $set: { curr_state, updatedAt: new Date() },
-      $push: { movements: { ...movement, timestamp: Date.now() } },
+      $push: { movements: { ...movement, board: curr_state.board, timestamp: Date.now() } },
     });
 
     return {

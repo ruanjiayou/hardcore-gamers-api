@@ -109,7 +109,8 @@ export default class Xiangqi {
     // 避免此处直接写 MPlayer/MMatch 造成重复加分与状态不一致。
     const diff: any = {
       $set: { curr_state, updatedAt: new Date() },
-      $push: { movements: { ...movement, timestamp: Date.now() } }
+      // board 快照：供对局回放按帧渲染
+      $push: { movements: { ...movement, board: curr_state.board, timestamp: Date.now() } }
     }
     await MMatch.updateOne({ _id: match._id }, diff);
 

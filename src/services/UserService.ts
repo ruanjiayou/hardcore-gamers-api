@@ -12,8 +12,10 @@ const VUser = z.object({
 export class UserService {
 
   async getInfoById(_id: string) {
-    const user = await MUser.findById(_id, { pass: 0 }).lean(true);
-    return user;
+    const user = await MUser.findById(_id, { pass: 0 }).lean(true) as any;
+    if (!user) return user;
+    // 昵称缺省回退登录名：老用户没有 nickname 字段，前端统一读 user.nickname
+    return { ...user, nickname: user.nickname || user.name };
   }
 
   async getStats() {

@@ -98,7 +98,10 @@ export interface IMatch {
 
 export interface IUser {
   _id: string;
+  /** 登录名（唯一性由应用层保证，不可改） */
   name: string;
+  /** 展示昵称：个人中心可改，缺省等于 name */
+  nickname?: string;
   avatar: string;
   pass: string;
   email: string;

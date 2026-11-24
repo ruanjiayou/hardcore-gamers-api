@@ -60,7 +60,9 @@ export async function addRobotToRoom(room_id: string, options: { ignoreLimit?: b
   };
 
   try {
-    const ticket = ticketHelper.encrypt(JSON.stringify({ user_id: claimed.user_id, player_id: claimed._id }));
+    // 票据带 7 天有效期：够机器人重启恢复（sqlite 里存的就是它），又不会永久可用。
+    // 过期后 authMiddleware 的 decrypt 会抛「票据已过期」，机器人服务据此重新申请。
+    const ticket = ticketHelper.encrypt(JSON.stringify({ user_id: claimed.user_id, player_id: claimed._id }), 7 * 24 * 3600);
     const resp = await fetch(`${config.robot_url}/add-robot`, {
       method: 'post',
       headers: new Headers({ 'Content-Type': 'application/json' }),

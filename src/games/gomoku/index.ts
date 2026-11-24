@@ -44,7 +44,8 @@ export default class Gomoku {
     }
     curr_state.board[position] = to.role;
     curr_state.curr_turn = next?._id;
-    const diff: any = { $set: { curr_state, updatedAt: new Date() }, $push: { movements: { ...movement, timestamp: Date.now() } } }
+    // board 快照：回放直接按帧渲染，前端不需要重放规则（见 controller/match.ts）
+    const diff: any = { $set: { curr_state, updatedAt: new Date() }, $push: { movements: { ...movement, board: curr_state.board, timestamp: Date.now() } } }
     gameover = this.checkWin(curr_state, to)
     await MMatch.updateOne({ _id: match._id }, diff);
     return {

@@ -18,11 +18,14 @@ import { authMiddleware, type AuthSocket } from './middleware/auth';
 import { setupLobbyHandlers } from './handlers/LobbyHandler';
 import { setupRoomHandlers } from './handlers/RoomHandler';
 import { setupMatchingHandlers } from './handlers/MatchingHandler';
+import { setupInviteHandlers } from './handlers/InviteHandler';
 import { playerService } from './services/PlayerService';
 import redis from './utils/redis'
 
 import gameController from './controller/game'
 import oauthController from './controller/oauth'
+import userController from './controller/user'
+import matchController from './controller/match'
 import voicePackController from './controller/voicePack'
 import adminController from './controller/admin'
 import diagnosticsController from './controller/diagnostics'
@@ -105,6 +108,8 @@ healthRouter.get('/', (_req, res) => {
 const ROUTES: [prefix: string, router: any, name: string][] = [
   ['/api/games', gameController, 'game'],
   ['/api/oauth', oauthController, 'oauth'],
+  ['/api/users', userController, 'user'],
+  ['/api/matches', matchController, 'match'],
   ['/api/voice-packs', voicePackController, 'voicePack'],
   ['/api/admin', adminController, 'admin'],
   ['/api/debug', diagnosticsController, 'debug'],
@@ -176,6 +181,8 @@ io.on('connection', async (socket: AuthSocket) => {
   setupRoomHandlers(io, socket, user_id);
   // 匹配处理器内部按 (user_id, game_id) 解析 player_id，连接阶段不存在唯一 player
   setupMatchingHandlers(io, socket, user_id);
+  // 房间内邀请好友（room:invite / invite:respond）
+  setupInviteHandlers(io, socket, user_id);
 
   // 只在 LOG_LEVEL=debug 时全量打印事件名，平时零开销（不影响线上流量）
   if (wsLog.isLevelEnabled('debug')) {
