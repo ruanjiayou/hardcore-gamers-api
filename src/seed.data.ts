@@ -249,6 +249,18 @@ export const SEED_ROBOTS: SeedRobot[] = [
   })),
 ];
 
+/**
+ * 去掉昵称/登录名左侧的 🤖 前缀（UI-054）。
+ *
+ * 人机昵称不再带机器人 emoji：机器人身份由玩家列表的「机」徽标承担。
+ * 早期 seed / admin 会把名字写成「🤖 贪吃蛇 1 号」，源头已改，
+ * 但存量库 users.name / players.nickname 还带着前缀，
+ * 由 seed 的 cleanRobotEmoji() 一次性洗掉，客户端不做兜底清洗。
+ */
+export function stripRobotEmoji(name?: string | null): string {
+  return String(name ?? '').replace(/^\s*🤖\s*/u, '');
+}
+
 /** 官方无尽房要配的人机数量 */
 export const SNAKE_ENDLESS_BOT_COUNT = 5;
 

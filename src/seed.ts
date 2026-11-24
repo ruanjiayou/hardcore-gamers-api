@@ -12,7 +12,7 @@ import mongoose from 'mongoose';
 import { MGame, MPlayer, MRoom, MUser, MVoicePack } from './models';
 import config from './config';
 import redis from './utils/redis';
-import { SEED_GAMES, SEED_ROBOTS, SEED_VOICE_PACKS, robotPlayerSeed, officialRoomSeeds } from './seed.data';
+import { SEED_GAMES, SEED_ROBOTS, SEED_VOICE_PACKS, robotPlayerSeed, officialRoomSeeds, stripRobotEmoji } from './seed.data';
 import { normalizeOwner } from './utils/roomPolicy';
 
 export { SEED_GAMES, SEED_ROBOTS, SEED_VOICE_PACKS };
@@ -90,6 +90,39 @@ export async function seedRobots(): Promise<SeedResult> {
     console.log(`🤖 机器人账号初始化：新增 ${inserted} 个，已存在 ${kept} 个`);
   }
   return { inserted, kept };
+}
+
+/**
+ * 清洗存量人机昵称左侧的 🤖 前缀（UI-054）。
+ *
+ * 早期 seed / admin 会把机器人名字写成「🤖 贪吃蛇 1 号」，源头（seed.data / admin）
+ * 现在不再拼前缀，但库里已落库的 users.name / users.nickname / players.nickname 还带着。
+ * 这里做一次性数据迁移：按正则批量去前缀，幂等，跑第二遍没有匹配就什么都不做。
+ */
+export async function cleanRobotEmoji(): Promise<SeedResult> {
+  let changed = 0;
+  const users = await MUser.find({
+    $or: [{ name: /^\s*🤖/ }, { nickname: /^\s*🤖/ }],
+  }).lean(true);
+  for (const u of users as any[]) {
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    if (u.name) patch.name = stripRobotEmoji(u.name);
+    if (u.nickname) patch.nickname = stripRobotEmoji(u.nickname);
+    await MUser.updateOne({ _id: u._id }, { $set: patch });
+    changed++;
+  }
+  const players = await MPlayer.find({ nickname: /^\s*🤖/ }).lean(true);
+  for (const p of players as any[]) {
+    await MPlayer.updateOne(
+      { _id: p._id },
+      { $set: { nickname: stripRobotEmoji(p.nickname), updatedAt: new Date() } },
+    );
+    changed++;
+  }
+  if (changed > 0) {
+    console.log(`🧹 人机昵称清洗：去掉 🤖 前缀 ${changed} 条`);
+  }
+  return { inserted: changed, kept: 0 };
 }
 
 /**
@@ -194,6 +227,7 @@ export async function seedVoicePacks(): Promise<SeedResult> {
 export async function seedAll() {
   await seedGames();
   await seedRobots();
+  await cleanRobotEmoji();
   await seedOfficialRooms();
   await seedVoicePacks();
 }

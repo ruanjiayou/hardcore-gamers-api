@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { SEED_GAMES, SEED_ROBOTS, robotPlayerSeed, officialRoomSeeds, OFFICIAL_ROOMS_PER_GAME, SNAKE_ENDLESS_BOT_COUNT } from '../src/seed.data';
+import { SEED_GAMES, SEED_ROBOTS, robotPlayerSeed, officialRoomSeeds, OFFICIAL_ROOMS_PER_GAME, SNAKE_ENDLESS_BOT_COUNT, stripRobotEmoji } from '../src/seed.data';
 
 describe('种子数据一致性', () => {
   test('基础游戏：五子棋、象棋、黑白棋、国际象棋、2048、俄罗斯方块、贪吃蛇', () => {
@@ -122,5 +122,36 @@ describe('种子数据一致性', () => {
       expect(player.user_id).toBe(r.user_id);
       expect(player.room_id).toBe('');
     });
+  });
+  test('人机昵称不带 🤖 前缀（UI-054）：源头干净，存量库由 seed 清洗', () => {
+    SEED_ROBOTS.forEach(r => {
+      expect(r.user_name.startsWith('🤖')).toBe(false);
+      expect(robotPlayerSeed(r).nickname.startsWith('🤖')).toBe(false);
+    });
+  });
+});
+
+describe('人机昵称前缀清洗（存量库迁移用）', () => {
+  test('去掉开头的 🤖 与其后空白', () => {
+    expect(stripRobotEmoji('🤖 贪吃蛇 1 号')).toBe('贪吃蛇 1 号');
+    expect(stripRobotEmoji('🤖五子棋大师')).toBe('五子棋大师');
+    expect(stripRobotEmoji('🤖   象棋大师')).toBe('象棋大师');
+  });
+
+  test('普通昵称原样返回（不误伤）', () => {
+    expect(stripRobotEmoji('小明')).toBe('小明');
+    expect(stripRobotEmoji('🐯 老虎')).toBe('🐯 老虎');
+    expect(stripRobotEmoji('大 🤖 师')).toBe('大 🤖 师');
+  });
+
+  test('空值安全', () => {
+    expect(stripRobotEmoji(undefined)).toBe('');
+    expect(stripRobotEmoji(null)).toBe('');
+    expect(stripRobotEmoji('')).toBe('');
+  });
+
+  test('幂等：洗过一次再洗不变', () => {
+    const once = stripRobotEmoji('🤖 贪吃蛇 1 号');
+    expect(stripRobotEmoji(once)).toBe(once);
   });
 });
