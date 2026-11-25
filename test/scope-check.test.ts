@@ -1,7 +1,7 @@
 /**
  * 静态检查：捕捉「引用了作用域外变量」这类**只有运行时才炸**的错误。
  *
- * 背景（`SB-054`）：`enterEndlessArena` 里加 skin 参数时误写了 `(player as any).skin`，
+ * 背景（`SB-054`）：`enterArena` 里加 skin 参数时误写了 `(player as any).skin`，
  * 而 `player` 并不在该函数作用域内 → 运行时 `ReferenceError: player is not defined`。
  * 这个错误被 `try/catch` 吞掉，只在日志里留一行「无尽竞技房开局失败」，
  * 表现是「玩家进了房间但对局永远不开」。
@@ -131,9 +131,9 @@ const KEYWORDS = new Set([
 ]);
 
 describe('作用域外变量引用（静态扫描）', () => {
-  test('enterEndlessArena 不引用作用域外的 player', () => {
+  test('enterArena 不引用作用域外的 player', () => {
     const src = readFileSync(join(SRC, 'handlers/LobbyHandler.ts'), 'utf-8');
-    const raw = extractFunction(src, 'enterEndlessArena');
+    const raw = extractFunction(src, 'enterArena');
     expect(raw.length).toBeGreaterThan(0);
     const body = stripLiterals(raw);
 
@@ -147,7 +147,7 @@ describe('作用域外变量引用（静态扫描）', () => {
     const local = new Set<string>();
     const declRe = /\b(?:const|let|var)\s+([\w$]+)/g;
     while ((m = declRe.exec(body))) local.add(m[1]);
-    for (const p of paramNames(extractSignature(src, 'enterEndlessArena'))) local.add(p);
+    for (const p of paramNames(extractSignature(src, 'enterArena'))) local.add(p);
     for (const cm of body.matchAll(/catch\s*\(\s*([\w$]+)/g)) local.add(cm[1]);
     for (const dm of body.matchAll(/\b(?:const|let|var)\s*\{([^}]*)\}/g)) {
       for (const part of dm[1].split(',')) {
@@ -171,7 +171,7 @@ describe('作用域外变量引用（静态扫描）', () => {
 
     for (const file of tsFiles(SRC)) {
       const src = readFileSync(file, 'utf-8');
-      for (const fn of ['enterEndlessArena', 'matchRoom', 'joinRoom', 'createRoom']) {
+      for (const fn of ['enterArena', 'matchRoom', 'joinRoom', 'createRoom']) {
         const body = stripLiterals(extractFunction(src, fn));
         if (!body) continue;
         // 形参与本地声明

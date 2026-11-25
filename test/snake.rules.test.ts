@@ -19,6 +19,8 @@ import {
   SNAKE_CORPSE_VALUE_MAX,
   SNAKE_FOOD_COUNT,
   SNAKE_FOOD_TIERS,
+  snakeTierForValue,
+  snakeRadiusForValue,
   SNAKE_GROW_PER_SCORE,
   SNAKE_HEAD_RADIUS,
   SNAKE_INVINCIBLE_MS,
@@ -130,14 +132,18 @@ function makeState(
 
 let foodSeq = 1;
 /** 造一颗普通食物 */
-const foodAt = (x: number, y: number, value = SNAKE_FOOD_TIERS[0].value): SnakeFoodItem => ({
-  id: foodSeq++,
-  x,
-  y,
-  r: value >= 20 ? SNAKE_FOOD_TIERS[2].radius : (value >= 8 ? SNAKE_FOOD_TIERS[1].radius : SNAKE_FOOD_TIERS[0].radius),
-  v: value,
-  k: SNAKE_KIND_FOOD,
-});
+const foodAt = (x: number, y: number, value = SNAKE_FOOD_TIERS[0].value): SnakeFoodItem => {
+  const tier = snakeTierForValue(value);
+  return {
+    id: foodSeq++,
+    x,
+    y,
+    r: SNAKE_FOOD_TIERS[tier].radius,
+    v: value,
+    k: SNAKE_KIND_FOOD,
+    t: tier,
+  };
+};
 
 /** 造一个道具 */
 const itemAt = (x: number, y: number, kind: number): SnakeFoodItem => ({
@@ -147,6 +153,7 @@ const itemAt = (x: number, y: number, kind: number): SnakeFoodItem => ({
   r: 11,
   v: 0,
   k: kind,
+  t: 0,
 });
 
 describe('贪吃蛇规则（规格 §12 验收用例）', () => {
@@ -185,11 +192,27 @@ describe('贪吃蛇规则（规格 §12 验收用例）', () => {
     const s = straight('p1', 1000, 1000, 240);
     const spine = snakeSpine(s);
     expect(spine[0]).toEqual([1000, 1000]);
-    for (let i = 1; i < spine.length; i++) {
+    // 末点之前都是等距采样（容差 2px）
+    for (let i = 1; i < spine.length - 1; i++) {
       const d = Math.hypot(spine[i][0] - spine[i - 1][0], spine[i][1] - spine[i - 1][1]);
       expect(d).toBeGreaterThan(SNAKE_SEG_SPACING - 2);
       expect(d).toBeLessThan(SNAKE_SEG_SPACING + 2);
     }
+  });
+
+  test('身体采样：末点是精确尾巴（spine 弧长必须等于身长）', () => {
+    // 固定间距的采样只会落在身长的整数倍上（身长 240 → 末点只到 220），
+    // 真实尾巴那一截采不到 → 客户端按身长截断时永远命中不了尾点，
+    // 尾巴就会停在原地、每 50ms 跳一下。所以末点必须是精确尾巴。
+    const s = straight('p1', 1000, 1000, 240);
+    const spine = snakeSpine(s);
+    let arc = 0;
+    for (let i = 1; i < spine.length; i++) {
+      arc += Math.hypot(spine[i][0] - spine[i - 1][0], spine[i][1] - spine[i - 1][1]);
+    }
+    expect(arc).toBe(240);
+    // 末点就是路径末端（尾巴）
+    expect(spine[spine.length - 1]).toEqual([760, 1000]);
   });
 
   // ---------- 1 直行 ----------
@@ -303,6 +326,23 @@ describe('贪吃蛇规则（规格 §12 验收用例）', () => {
     }
   });
 
+  test('档位是唯一真相源：value → tier → radius 与 minValue 门槛一致', () => {
+    // 每档的 value 必须落在自己的门槛区间内（否则档位表自相矛盾）
+    SNAKE_FOOD_TIERS.forEach((tier, i) => {
+      expect(snakeTierForValue(tier.value)).toBe(i);
+    });
+    // 门槛边界：低于门槛归上一档，达到门槛归本档
+    expect(snakeTierForValue(0)).toBe(0);
+    expect(snakeTierForValue(7)).toBe(0);
+    expect(snakeTierForValue(8)).toBe(1);
+    expect(snakeTierForValue(19)).toBe(1);
+    expect(snakeTierForValue(20)).toBe(2);
+    expect(snakeTierForValue(36)).toBe(2);
+    // 半径由档位派生，不维护第二套阈值
+    expect(snakeRadiusForValue(8)).toBe(SNAKE_FOOD_TIERS[1].radius);
+    expect(snakeRadiusForValue(20)).toBe(SNAKE_FOOD_TIERS[2].radius);
+  });
+
   // ---------- 11 磁铁 ----------
   test('用例 11：磁铁把 220px 内非道具拉过来，再吃刷新为 6s', () => {
     const a = straight('p1', 600, 600);
@@ -333,6 +373,8 @@ describe('贪吃蛇规则（规格 §12 验收用例）', () => {
     const state = makeState([a, b], [itemAt(306, 300, SNAKE_KIND_STAR)], { variant: 'endless' });
     stepSnake(state, { dt: STEP, now });
     expect(a.invincibleUntil).toBe(now + 2500);
+    // 视觉字段同步生效：starUntil 让客户端画星星金圈（与无敌蓝圈区分）
+    expect(a.starUntil).toBe(now + 2500);
     // 无敌期间穿过 B 的身体（x=340）也不死
     for (let i = 0; i < 8; i++) stepSnake(state, { dt: STEP, now: now + (i + 1) * 50 });
     expect(a.alive).toBe(true);
@@ -341,8 +383,10 @@ describe('贪吃蛇规则（规格 §12 验收用例）', () => {
     state.food.push(itemAt(a.x, a.y, SNAKE_KIND_STAR));
     stepSnake(state, { dt: STEP, now: later });
     expect(a.invincibleUntil).toBe(later + 2500);
+    expect(a.starUntil).toBe(later + 2500);
     // 不免墙
     a.invincibleUntil = later + 10_000;
+    a.starUntil = later + 10_000;
     a.angle = Math.PI;
     a.targetAngle = Math.PI;
     for (let i = 0; i < 400 && a.alive; i++) stepSnake(state, { dt: STEP, now: later + i * 50 });
@@ -419,7 +463,7 @@ describe('贪吃蛇规则（规格 §12 验收用例）', () => {
     // 铺满 80 颗低价值残骸
     const full: SnakeFoodItem[] = [];
     for (let i = 0; i < SNAKE_CORPSE_FIELD_MAX; i++) {
-      full.push({ id: 50_000 + i, x: 2000 + i * 30, y: 3000, r: 6, v: 1, k: SNAKE_KIND_CORPSE });
+      full.push({ id: 50_000 + i, x: 2000 + i * 30, y: 3000, r: 6, v: 1, k: SNAKE_KIND_CORPSE, t: 0 });
     }
     const state = makeState([a, b], full, { variant: 'endless' });
     for (let i = 0; i < 3 && a.alive; i++) stepSnake(state, { dt: STEP, now: now + i * 50 });

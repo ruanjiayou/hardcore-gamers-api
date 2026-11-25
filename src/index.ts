@@ -39,9 +39,10 @@ import { seedAll } from './seed';
 import { timeControlService } from './services/TimeControlService';
 import { snakeRuntimeService } from './services/SnakeRuntimeService';
 import { roomService } from './services/RoomService';
+import { matchQueue } from './services/MatchQueueService';
 import { ensureRoomBots } from './services/RobotService';
 import { SNAKE_ENDLESS_BOT_COUNT } from './seed.data';
-import { MPlayer, MRoom } from './models';
+import { MGame, MPlayer, MRoom } from './models';
 import constant from './constant';
 import { pick } from 'lodash';
 
@@ -59,6 +60,43 @@ const io = new Server(server, {
   transports: ['websocket', 'polling'],  // 支持两种传输方式
   pingInterval: 25000,
   pingTimeout: 60000
+});
+
+/**
+ * 常驻竞技场等待队列的补位动作。
+ *
+ * 竞技场（贪吃蛇无尽）的桌子是**预建的官方桌**，匹配永远不新建房间：
+ * 桌上有位置就直接进，没位置就排队等着 —— 有人离开腾出位置时，
+ * 这里把排队的人拉进那张桌子，并通知他的前端跳过去。
+ */
+matchQueue.bindJoiner(async (waiter, room) => {
+  const target = io.sockets.sockets.get(waiter.socket_id);
+  // 等的人已经断线了：不用补，让队列里的下一位上
+  if (!target) return false;
+  const player = await MPlayer.findById(waiter.player_id).lean(true);
+  if (!player) return false;
+  const joined = await roomService.joinRoom({ room_id: room._id, type: constant.MEMBER.TYPE.player }, player as any);
+  if (!joined.success) return false;
+  const member = { ...player, ...joined.newPlayer };
+  // 把等待者的 socket 拉进房间频道（否则收不到房间广播）
+  target.room_id = room._id;
+  target.player_id = player._id;
+  target.join(`room:${room._id}`);
+  io.to(`room:${room._id}`).emit('room:player-joined', member);
+  // 竞技场进房即开局
+  const match_id = await roomService.enterArena(room, {
+    _id: player._id,
+    nickname: player.nickname,
+    skin: (player as any).skin,
+  });
+  if (match_id) {
+    io.to(`room:${room._id}`).emit('room:game-start', { room_id: room._id, match_id, timestamp: Date.now() });
+  }
+  // 通知等待者「桌子找到了」，前端据此跳进房间
+  const game = await MGame.findById(room.game_id, { slug: 1 }).lean(true);
+  io.to(waiter.socket_id).emit('lobby:match-found', { room_id: room._id, slug: game?.slug || '' });
+  console.log(`🎯 队列补位：${player.nickname || player._id} 进入竞技场 ${room._id}`);
+  return true;
 });
 
 /**
@@ -242,6 +280,9 @@ io.on('connection', async (socket: AuthSocket) => {
       });
     }
     io.emit('user:change', { user_id, field: 'atline', value: false, atline: false, timestamp: Date.now() });
+
+    // 排队等桌的人断线了 → 从等待队列里摘掉（否则会一直占着队列位置）
+    matchQueue.cancelBySocket(socket.id);
 
     /**
      * 人机异常掉线的额外清理。

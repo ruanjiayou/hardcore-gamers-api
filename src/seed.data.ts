@@ -147,6 +147,8 @@ export const SEED_GAMES: IGame[] = [
         board: 'endless',
         desc: '1–10 人同图刷分，任意方向转向，死亡即记榜，弹框选重生（3s 无敌）或退出',
         numbers: { min: 1, max: 10 },
+        // 常驻竞技场：官方桌常驻 playing，玩家随时进出，房间只当内部容器
+        arena: true,
       },
       {
         key: 'team',
@@ -192,9 +194,11 @@ export function officialRoomSeeds(): IRoom[] {
         variant: v.key,
         label: v.label,
         numbers: v.numbers || game.numbers,
+        // 常驻竞技场玩法（贪吃蛇无尽）：房间只当内部容器，进房即开局、常驻 playing
+        arena: v.arena === true,
         prefix: v.key === 'team' ? `official-${game.slug}` : `official-${game.slug}-${v.key}`,
       }))
-      : [{ variant: '', label: '官方', numbers: game.numbers, prefix: `official-${game.slug}` }];
+      : [{ variant: '', label: '官方', numbers: game.numbers, arena: false, prefix: `official-${game.slug}` }];
 
     for (const group of groups) {
       for (let i = 1; i <= OFFICIAL_ROOMS_PER_GAME; i++) {
@@ -216,7 +220,10 @@ export function officialRoomSeeds(): IRoom[] {
           transient: false,
           createdAt: new Date(),
           updatedAt: new Date(),
-          settings: group.variant ? { variant: group.variant } : {},
+          // 常驻竞技场（贪吃蛇无尽）：房间只当内部容器，进房即开局、常驻 playing
+          settings: group.variant
+            ? { variant: group.variant, ...(group.arena ? { arena: true } : {}) }
+            : {},
         });
       }
     }

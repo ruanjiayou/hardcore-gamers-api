@@ -22,6 +22,7 @@ import {
   shouldTakeOwnership,
 } from '../utils/roomPolicy'
 import { snakeRuntimeService } from './SnakeRuntimeService';
+import { matchQueue } from './MatchQueueService';
 import { getGameParams } from './GameParamsService';
 
 export class RoomService {
@@ -201,8 +202,8 @@ export class RoomService {
       return { match_id: room.match_id, started: false };
     }
 
-    // 只有无尽竞技房"进房即开局"；多人对战必须等房主点开始
-    if (room.settings?.variant !== 'endless') return { match_id: '', started: false };
+    // 只有常驻竞技场"进房即开局"；多人对战必须等房主点开始
+    if (room.settings?.arena !== true) return { match_id: '', started: false };
     const players = (room.members || []).filter((m: any) => m.member_type === MemberType.player);
     if (!players.length) return { match_id: '', started: false };
 
@@ -217,6 +218,27 @@ export class RoomService {
     if (started) snakeRuntimeService.spawn(started);
     console.log(`🐍 无尽竞技房 ${room_id} 自动开局，match=${match_id}`);
     return { match_id, started: true };
+  }
+
+  /**
+   * 常驻竞技场：进房即开局，并把新玩家放进当前对局。
+   *
+   * - 房间还没开局 → ensureSnakeArena 直接开一局（新玩家自然在局里）；
+   * - 已经在局中 → 把新玩家的蛇补进当前对局（他不是开局时建进去的）。
+   *
+   * 返回对局 id；开局失败返回空串。
+   */
+  async enterArena(room: any, player: { _id: string; nickname?: string; skin?: string }): Promise<string> {
+    const before = await MRoom.findById(room._id, { status: 1 }).lean(true) as any;
+    const arena = await this.ensureSnakeArena(room._id);
+    if (!arena.match_id) return '';
+    // 已经是进行中的对局：把刚进来的玩家加进去（开局时才建的局已包含他）
+    // 必须 await：addPlayer 会把加入者回写进 match.players，
+    // 回写没落库前客户端发的转向指令会被判成"不在局中"而丢弃
+    if (!arena.started && before?.status === constant.ROOM.STATUS.playing) {
+      await snakeRuntimeService.addPlayer(arena.match_id, player._id, player.nickname, player.skin);
+    }
+    return arena.match_id;
   }
 
   /**
@@ -299,9 +321,9 @@ export class RoomService {
         return { success: false, reason: '房间已满' };
       }
 
-      // 检查房间状态：无尽挑战是常驻竞技房，开局后仍可随时进出
-      const endlessArena = room.settings?.variant === 'endless';
-      if (room.status !== constant.ROOM.STATUS.waiting && !endlessArena) {
+      // 检查房间状态：常驻竞技场开局后仍可随时进出
+      const arena = room.settings?.arena === true;
+      if (room.status !== constant.ROOM.STATUS.waiting && !arena) {
         console.log(`❌ 房间游戏已开始: ${data.room_id}`);
         return { success: false, reason: '房间游戏已开始' };
       }
@@ -359,14 +381,14 @@ export class RoomService {
     if (!room) return { ok: false, reason: '房间不存在' };
 
     const variant = room.settings?.variant as string | undefined;
-    const endlessArena = variant === 'endless';
-    const decision = resolveLeaveAction({ ...room, variant }, player_id);
+    const arena = room.settings?.arena === true;
+    const decision = resolveLeaveAction({ ...room, variant, arena }, player_id);
     if (decision.action === 'blocked') {
       return { ok: false, reason: decision.reason };
     }
-    // 无尽模式：任何离开路径（最后一人退出 / 房主解散 / 普通离房）都要先把分数同步到榜单。
+    // 竞技场：任何离开路径（最后一人退出 / 房主解散 / 普通离房）都要先把分数同步到榜单。
     // 死亡那一 tick 已记过一次，$max 幂等；这里主要覆盖"还活着就点离开/关闭"的情况。
-    const liveMatch = endlessArena && room.match_id ? room.match_id : '';
+    const liveMatch = arena && room.match_id ? room.match_id : '';
     if (liveMatch) {
       await snakeRuntimeService.syncScore(liveMatch, player_id);
       // 解散时房间会立刻销毁运行时，不需要再单独移蛇
@@ -398,7 +420,7 @@ export class RoomService {
     console.log(`👤 玩家 ${player_id} 离开房间 ${room_id}，当前人数: ${remainMembers.length}${decision.reset ? '（空房重置）' : ''}`);
 
     if (decision.reset) {
-      // 无尽模式没人了：结束这一局并按各自最高分结算（房间已回等待态，幂等）
+      // 竞技场没人了：结束这一局并按各自最高分结算（房间已回等待态，幂等）
       if (liveMatch) await snakeRuntimeService.stopAndFinish(liveMatch);
       // 兜底：liveMatch 为空（房间的 match_id 已经被清掉）时，按房间把运行时停干净，
       // 否则旧运行时会变成僵尸继续广播，下一局开起来就变成两个运行时抢频道（SB-053）
@@ -418,6 +440,13 @@ export class RoomService {
           })
         ));
       }
+    } else if (arena) {
+      // 竞技场腾出一个位置 → 把排队中的玩家补进来（常驻竞技场是"有空位就进"的语义）
+      void matchQueue.fill({
+        _id: room._id,
+        game_id: room.game_id,
+        settings: room.settings,
+      }, 1).catch((error: any) => console.log('❌ 竞技场补位失败:', error));
     }
 
     return { ok: true, dissolved: false };
@@ -460,6 +489,14 @@ export class RoomService {
       }).catch(err => {
         console.log(err);
       });
+    }
+    // 竞技场踢人也腾出一个位置 → 补一个排队中的玩家进来
+    if (room.settings?.arena === true) {
+      void matchQueue.fill({
+        _id: room._id,
+        game_id: room.game_id,
+        settings: room.settings,
+      }, 1).catch((error: any) => console.log('❌ 竞技场补位失败:', error));
     }
     return { ok: true };
   }

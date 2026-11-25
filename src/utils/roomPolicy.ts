@@ -27,8 +27,25 @@ export interface PolicyRoom {
   transient?: boolean
   allowSpectate?: boolean
   members?: PolicyMember[]
-  /** 玩法变体：endless（无尽挑战）是常驻对局，随时可以退出 */
+  /** 玩法变体 key（endless / team / …） */
   variant?: string
+  /**
+   * **常驻竞技场**标记：房间的官方桌常驻 playing，玩家随时进出，
+   * 房间只当内部容器（成员表 + socket 频道）。
+   *
+   * 与具体游戏无关 —— 任何玩法的官方桌都可以标成竞技场。
+   */
+  arena?: boolean
+}
+
+/**
+ * 是否是常驻竞技场房间。
+ *
+ * 判定只看房间自己的 `settings.arena` 标记（建桌时按玩法变体的 arena 属性写入），
+ * 不依赖任何具体游戏的玩法名 —— 这样新增游戏接入竞技场时不必改这里的策略。
+ */
+export function isArenaRoom(room: Pick<PolicyRoom, 'arena'> | null | undefined): boolean {
+  return room?.arena === true
 }
 
 export interface Decision {
@@ -171,10 +188,10 @@ export function resolveLeaveAction(room: PolicyRoom, player_id: string): LeaveDe
   // 单人快开房：随时可离开（含游戏中——单人无对手，分数已实时上报），离开即销毁
   if (room.transient) return { action: 'destroy' }
 
-  // 无尽挑战是常驻对局（死了可重生、随时能走），不套用"进行中禁止离开"
-  const endlessArena = room.variant === 'endless'
+  // 常驻竞技场是常开对局（死了可重生、随时能走），不套用"进行中禁止离开"
+  const arena = isArenaRoom(room);
   // 对局进行中禁止离开，避免中途离场造成房间/对局状态不一致
-  if (room.status === constant.ROOM.STATUS.playing && !endlessArena) {
+  if (room.status === constant.ROOM.STATUS.playing && !arena) {
     return { action: 'blocked', reason: '游戏进行中不能离开，请先认输或等待对局结束' }
   }
 
@@ -184,11 +201,11 @@ export function resolveLeaveAction(room: PolicyRoom, player_id: string): LeaveDe
   const nextHumanOwner = pickTempOwner(remain) || undefined
 
   if (room.official) {
-    // 无尽竞技房是常驻房：人机常驻场上陪玩，真人离开只走自己，
+    // 竞技场是常驻房：人机常驻场上陪玩，真人离开只走自己，
     // 不清场、不回收人机、不结束对局（否则真人一来一回就把陪玩清空了）。
-    if (endlessArena) {
-      const endlessOwner = player_id === room.owner_id ? nextHumanOwner ?? '' : undefined
-      return { action: 'leave', transferOwnerTo: endlessOwner, reset: false }
+    if (arena) {
+      const arenaOwner = player_id === room.owner_id ? nextHumanOwner ?? '' : undefined
+      return { action: 'leave', transferOwnerTo: arenaOwner, reset: false }
     }
     // 官方房只退出不解散。房主离开 → 转让给下一位真人对战玩家；无真人 → 空桌重置。
     const nextOwner = player_id === room.owner_id ? nextHumanOwner ?? '' : undefined

@@ -18,7 +18,8 @@ export const MGame = mongoose.model<IGame>('games', new mongoose.Schema({
   // solo=单人直接开局（无房间）；room=房间制（棋类/组队）
   mode: { type: String, default: 'room' },
   // 玩法变体：同一游戏可同时提供单人玩法与房间玩法（贪吃蛇：无尽/多人）
-  variants: [{ _id: false, key: String, label: String, mode: String, board: String, desc: String, numbers: { min: Number, max: Number }, teams: [{ _id: false, name: String, size: Number }] }],
+  // arena=true 表示「常驻竞技场」玩法：官方桌常驻 playing，玩家随时进出
+  variants: [{ _id: false, key: String, label: String, mode: String, board: String, desc: String, numbers: { min: Number, max: Number }, teams: [{ _id: false, name: String, size: Number }], arena: Boolean }],
   // 排行榜分榜：每个玩法一张榜
   boards: [{ _id: false, key: String, label: String }],
   numbers: { min: Number, max: Number },

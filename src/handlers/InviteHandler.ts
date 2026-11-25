@@ -12,7 +12,6 @@ import { v7 } from 'uuid';
 import { MGame, MPlayer, MRoom, MUser } from '../models';
 import { playerService } from '../services/PlayerService';
 import { roomService } from '../services/RoomService';
-import { snakeRuntimeService } from '../services/SnakeRuntimeService';
 import type { AuthSocket } from '../middleware/auth';
 import constant from '../constant';
 
@@ -139,14 +138,15 @@ export function setupInviteHandlers(io: Server, socket: AuthSocket, user_id: str
     io.in(`user:${user_id}`).socketsJoin(`room:${room._id}`);
     io.to(`room:${room._id}`).emit('room:player-joined', { ...player, ...joined.newPlayer });
 
-    // 无尽竞技房是常驻对局：补开局通知并把新玩家放进当前对局
-    if (room.settings?.variant === 'endless') {
-      const arena = await roomService.ensureSnakeArena(room._id);
-      if (arena.match_id) {
-        if (room.status === constant.ROOM.STATUS.playing) {
-          await snakeRuntimeService.addPlayer(arena.match_id, player._id, (player as any).nickname, (player as any).skin);
-        }
-        io.to(`room:${room._id}`).emit('room:game-start', { room_id: room._id, match_id: arena.match_id, timestamp: Date.now() });
+    // 常驻竞技场是常驻对局：补开局通知并把新玩家放进当前对局
+    if (room.settings?.arena === true) {
+      const match_id = await roomService.enterArena(room, {
+        _id: player._id,
+        nickname: (player as any).nickname,
+        skin: (player as any).skin,
+      });
+      if (match_id) {
+        io.to(`room:${room._id}`).emit('room:game-start', { room_id: room._id, match_id, timestamp: Date.now() });
       }
     }
 

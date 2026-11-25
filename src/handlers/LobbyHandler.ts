@@ -10,7 +10,7 @@ import type { AuthSocket } from '../middleware/auth';
 import { userService } from '../services/UserService';
 import { CB } from '../types';
 import { MPlayer, MRoom } from '../models';
-import { snakeRuntimeService } from '../services/SnakeRuntimeService';
+import { matchQueue } from '../services/MatchQueueService';
 import constant, { MemberType } from '../constant';
 import { isSoloGame } from '../utils/gameMode';
 
@@ -24,6 +24,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
   socket.on('lobby:join-room', joinRoom);
   socket.on('lobby:quick-start', quickStart);
   socket.on('lobby:match', matchRoom);
+  socket.on('lobby:match-cancel', cancelMatch);
   socket.on('lobby:get-user-info', getUserInfo);
   socket.on('lobby:get-leaderboard', getLeaderboard);
   socket.on('lobby:get-stats', getStats);
@@ -160,10 +161,10 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       // 广播带上 member 字段，前端据此正确过滤 player/viewer
       io.to(`room:${data.room_id}`).emit('room:player-joined', joinedMember);
 
-      // 无尽挑战（官方竞技房）：进房即开局；已在局中的直接把自己那条蛇加进去
-      if (room.settings?.variant === 'endless') {
+      // 常驻竞技场（官方桌）：进房即开局；已在局中的直接把自己那条蛇加进去
+      if (room.settings?.arena === true) {
         const isPlayer = data.type === constant.MEMBER.TYPE.player;
-        if (isPlayer) await enterEndlessArena(room, player._id, player.nickname, (player as any).skin);
+        if (isPlayer) await enterArena(room, player._id, player.nickname, (player as any).skin);
       }
     } catch (error) {
       cb(false, '加入房间失败');
@@ -171,10 +172,13 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
   }
 
   /**
-   * 匹配：不再给玩家看房间列表，直接找一张"还有空位"的桌子进去。
-   * - 优先把已经有人但没坐满的桌子填满（体感上真的在匹配，而不是永远开新房）；
-   * - 一张空位都没有时，替你开一张新房等着（等同建房，玩家不用自己起名）；
-   * - 无尽挑战是常驻竞技房，开局后也能进，所以不看房间状态。
+   * 匹配：找一张"还有空位"的桌子进去。
+   *
+   * - **常驻竞技场玩法**（贪吃蛇无尽）：只在**已有的官方桌**里挑有位置的；
+   *   一张空位都没有就**排队等着**（有人离开腾出位置就会被拉进去）。
+   *   竞技场房间常驻 playing，玩家随时进出，所以不看房间状态。
+   *   **匹配永远不新建房间** —— 建桌是管理后台的职责（POST /api/admin/rooms）。
+   * - 其它房间玩法：先挑还有空位的公开桌（优先填满已有桌），一张都没有就替玩家开一张新桌。
    */
   async function matchRoom(data: { slug: string; variant?: string }, cb: CB) {
     if (!cb) return;
@@ -199,7 +203,8 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
     }
 
     const variantKey = variant?.key || '';
-    const endlessArena = variantKey === 'endless';
+    // 常驻竞技场玩法：官方桌常驻 playing，玩家随时进出
+    const arena = variant?.arena === true;
     const playerCount = (room: any) =>
       (room.members || []).filter((m: any) => m.member_type === constant.MEMBER.TYPE.player).length;
 
@@ -212,10 +217,13 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       }).lean(true);
 
       const candidates = rooms
-        // 只看同一玩法：无尽桌和多人桌不能混着匹配
+        // 只看同一玩法：竞技场桌和多人桌不能混着匹配
         .filter((r: any) => (r.settings?.variant || '') === variantKey)
+        // 竞技场只认官方桌（建桌是管理后台的职责，匹配不新建房间）
+        .filter((r: any) => (arena ? r.official === true : true))
         .filter((r: any) => playerCount(r) < r.numbers.max)
-        .filter((r: any) => endlessArena || r.status === constant.ROOM.STATUS.waiting)
+        // 竞技场房间常驻 playing，不看房间状态；其它玩法要等房主开局
+        .filter((r: any) => arena || r.status === constant.ROOM.STATUS.waiting)
         .sort((a: any, b: any) => {
           const diff = playerCount(b) - playerCount(a);
           if (diff) return diff;
@@ -230,6 +238,23 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
         const result = await roomService.joinRoom({ room_id: room._id, type: constant.MEMBER.TYPE.player }, player);
         if (!result.success) return cb(false, undefined, result.reason || '匹配失败');
         member = { ...player, ...result.newPlayer };
+      } else if (arena) {
+        // 竞技场没有空桌了 → 排队等着（有人离开腾出位置就会被拉进桌）
+        socket.player_id = player._id;
+        matchQueue.enqueue({
+          player_id: player._id,
+          game_id: game._id,
+          variant: variantKey,
+          nickname: player.nickname || '',
+          skin: (player as any).skin,
+          socket_id: socket.id,
+          enqueued_at: Date.now(),
+        });
+        const queueSize = matchQueue.size(game._id, variantKey);
+        console.log(`⏳ 竞技场已满：${player.nickname || player._id} 排队等待（队列 ${queueSize} 人）`);
+        // success=true + waiting=true：前端据此显示"排队中"，不是报错
+        cb(true, { waiting: true, queue_size: queueSize });
+        return;
       } else {
         room = await roomService.createRoomWithOwner({
           game_id: game._id,
@@ -260,7 +285,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       cb(true, { ...member, room_id: room._id });
       io.to(`room:${room._id}`).emit('room:player-joined', member);
 
-      if (endlessArena) await enterEndlessArena(room, player._id, player.nickname, (player as any).skin);
+      if (arena) await enterArena(room, player._id, player.nickname, (player as any).skin);
       console.log(`🎯 匹配成功: ${game.slug}/${variantKey} → ${room._id}（${room.official ? '官方桌' : '新桌'}）`);
     } catch (error) {
       console.log('❌ 匹配失败:', error);
@@ -269,26 +294,30 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
   }
 
   /**
-   * 无尽竞技房：没有"开始游戏"按钮，进房即开局。
-   * - 房间还在等待 / 房间停在 playing 但对局已不存在：统一交给 ensureSnakeArena
+   * 取消排队（竞技场满员时玩家主动退出等待）。
+   */
+  function cancelMatch(cb?: CB) {
+    if (!isLoggedIn) {
+      cb && cb(false, undefined, '取消匹配需要登陆');
+      return;
+    }
+    const cancelled = matchQueue.cancel(socket.player_id || '');
+    cb && cb(true, { cancelled });
+  }
+
+  /**
+   * 常驻竞技场：没有"开始游戏"按钮，进房即开局。
+   * - 房间还在等待 / 房间停在 playing 但对局已不存在：统一交给 RoomService.enterArena
    *   （它会自愈幽灵状态、必要时重新开局、并在运行时丢失时按库里局面重建）；
    * - 已经在局中（有人先到了）：除了重建运行时，还要把新玩家那条蛇放进当前对局。
    */
-  async function enterEndlessArena(room: any, player_id: string, nickname?: string, skin?: string) {
+  async function enterArena(room: any, player_id: string, nickname?: string, skin?: string) {
     try {
-      const before = await MRoom.findById(room._id, { status: 1 }).lean(true) as any;
-      const arena = await roomService.ensureSnakeArena(room._id);
-      if (!arena.match_id) return;
-      const payload = { room_id: room._id, timestamp: Date.now() };
-      // 已经是进行中的对局：把刚进来的玩家加进去（开局时才建的局已包含他）
-      // 必须 await：addPlayer 会把加入者回写进 match.players，
-      // 回写没落库前客户端发的转向指令会被判成"不在局中"而丢弃
-      if (!arena.started && before?.status === constant.ROOM.STATUS.playing) {
-        await snakeRuntimeService.addPlayer(arena.match_id, player_id, nickname, skin);
-      }
-      io.to(`room:${room._id}`).emit('room:game-start', { ...payload, match_id: arena.match_id });
+      const match_id = await roomService.enterArena(room, { _id: player_id, nickname, skin });
+      if (!match_id) return;
+      io.to(`room:${room._id}`).emit('room:game-start', { room_id: room._id, match_id, timestamp: Date.now() });
     } catch (error) {
-      console.log('❌ 无尽竞技房开局失败:', error);
+      console.log('❌ 竞技场开局失败:', error);
     }
   }
 

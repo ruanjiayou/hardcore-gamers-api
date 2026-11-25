@@ -516,9 +516,13 @@ router.get('/rooms', wrap(async (req, res) => {
 }));
 
 router.post('/rooms', wrap(async (req, res) => {
-  const { game_id, name, official, variant } = req.body || {};
+  const { game_id, name, official, variant, arena } = req.body || {};
   const game = await MGame.findById(String(game_id || '')).lean(true);
   if (!game) throw new Error('游戏不存在');
+  // 竞技场属性跟着玩法走：选了 arena 玩法就建成常驻竞技桌（进房即开局、常驻 playing），
+  // 除非显式传 arena=false 覆盖。
+  const variantInfo = variant ? (game.variants || []).find((v: any) => v.key === variant) : null;
+  const isArena = arena === undefined ? variantInfo?.arena === true : arena === true;
   const room = await roomService.createRoom({
     game_id: game._id,
     name: name || `${game.title} · 管理端新建`,
@@ -529,9 +533,13 @@ router.post('/rooms', wrap(async (req, res) => {
     isPrivate: false,
     transient: false,
     allowSpectate: true,
-    numbers: game.numbers,
+    // 人数上限跟玩法走（竞技场 1–10 人，多人 2–30 人）
+    numbers: variantInfo?.numbers || game.numbers,
     seats: [],
-    settings: variant ? { variant } : {},
+    settings: {
+      ...(variant ? { variant } : {}),
+      ...(isArena ? { arena: true } : {}),
+    },
   } as any);
   res.json({ code: 0, data: room });
 }));

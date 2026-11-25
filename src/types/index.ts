@@ -29,6 +29,13 @@ export interface IGameVariant {
   numbers?: { min: number, max: number };
   /** 该玩法的队伍配置（团队模式：6 队 × 每队 5 人） */
   teams?: { name: string; size: number }[];
+  /**
+   * **常驻竞技场**玩法：官方桌常驻 playing，玩家随时进出，房间只当内部容器
+   * （成员表 + socket 频道），对外只呈现「一场对局 + 榜单」。
+   *
+   * 属于**玩法结构**决策（与 `teams` 同级），不由管理端后台覆盖。
+   */
+  arena?: boolean;
 }
 
 export interface IGame {

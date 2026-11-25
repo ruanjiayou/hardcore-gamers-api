@@ -24,8 +24,12 @@ describe('种子数据一致性', () => {
         const team = g.variants?.find(v => v.key === 'team');
         expect(endless?.mode).toBe('room');
         expect(endless?.numbers?.max).toBe(10);
+        // 无尽是常驻竞技场玩法（arena=true）：官方桌常驻 playing，玩家随时进出
+        expect(endless?.arena).toBe(true);
         expect(team?.mode).toBe('room');
         expect(team?.numbers?.max).toBe(30);
+        // 团队玩法不是竞技场（要等房主开局）
+        expect(team?.arena).toBeUndefined();
         expect(g.boards?.map(b => b.key).sort()).toEqual(['endless', 'team']);
         // 团队模式：6 队，每队 5 人
         expect(g.role_config).toEqual({
@@ -87,6 +91,11 @@ describe('种子数据一致性', () => {
     // 无尽桌按 1–10 人配置
     snakeRooms.filter(r => r.settings?.variant === 'endless')
       .forEach(r => expect(r.numbers).toEqual({ min: 1, max: 10 }));
+    // 常驻竞技场标记：只有无尽桌带 settings.arena（团队桌不是竞技场）
+    snakeRooms.filter(r => r.settings?.variant === 'endless')
+      .forEach(r => expect(r.settings?.arena).toBe(true));
+    snakeRooms.filter(r => r.settings?.variant === 'team')
+      .forEach(r => expect(r.settings?.arena).toBeUndefined());
     // 团队桌按 6 队 × 5 人配置，并带队伍座位表
     snakeRooms.filter(r => r.settings?.variant === 'team')
       .forEach(r => {

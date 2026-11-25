@@ -11,7 +11,7 @@ import { describe, expect, test } from 'bun:test';
 import { computeFoodPayload } from '../src/services/SnakeRuntimeService';
 import type { SnakeFoodItem } from '../src/games/snake/rules';
 
-const food = (id: number, x = 0, y = 0): SnakeFoodItem => ({ id, x, y, r: 8, v: 1, k: 0 });
+const food = (id: number, x = 0, y = 0): SnakeFoodItem => ({ id, x, y, r: 8, v: 1, k: 0, t: 0 });
 /** 上一帧坐标表：id → 坐标 */
 const prevOf = (...ids: number[]) => new Map(ids.map(id => [id, { x: 0, y: 0 }]));
 
@@ -56,7 +56,14 @@ describe('贪吃蛇快照 · 拾取物增量', () => {
 
   test('载荷只带渲染与判定需要的字段（不带内部字段）', () => {
     const p = computeFoodPayload(prevOf(), [food(1)], true);
-    expect(Object.keys(p.food![0]).sort()).toEqual(['id', 'k', 'r', 'v', 'x', 'y']);
+    // t（外观档位）随快照下发：客户端直接贴对应素材，不再按 radius 反推
+    expect(Object.keys(p.food![0]).sort()).toEqual(['id', 'k', 'r', 't', 'v', 'x', 'y']);
+  });
+
+  test('档位随快照下发：客户端不需要按半径反推（两端反推必然漂移）', () => {
+    const big = { ...food(1), r: 12, v: 18, t: 1 };
+    const p = computeFoodPayload(prevOf(), [big], true);
+    expect(p.food![0].t).toBe(1);
   });
 
   test('foodMove：坐标变了才报位移（磁铁吸附）', () => {

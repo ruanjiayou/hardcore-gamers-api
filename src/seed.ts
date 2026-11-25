@@ -104,6 +104,11 @@ export async function seedOfficialRooms(): Promise<SeedResult> {
         if (wantVariant && existing.settings?.variant !== wantVariant) {
           await MRoom.updateOne({ _id: room._id }, { $set: { 'settings.variant': wantVariant } });
         }
+        // 常驻竞技场标记校正：竞技场官方桌必须带 settings.arena
+        // （进房即开局、房间常驻 playing、真人随时进出）。
+        if (room.settings?.arena === true && existing.settings?.arena !== true) {
+          await MRoom.updateOne({ _id: room._id }, { $set: { 'settings.arena': true } });
+        }
         // 人数上限校正：无尽模式从 6 人扩到 10 人、团队模式 6 队×5 人后，
         // 老库里的官方桌仍写着旧的 numbers.max，会导致房间装不满人。
         const wantNumbers = room.numbers;
@@ -246,6 +251,51 @@ export async function migrateAssetsToGameScope(): Promise<{ bgmRows: number; mar
   return { bgmRows, marked: marked.modifiedCount };
 }
 
+/** 一次性初始化标记：竞技场玩法属性已迁移 */
+const ARENA_VARIANTS_KEY = 'arena_variants_v1';
+
+/**
+ * 一次性迁移：把「常驻竞技场」玩法属性补进线上库的 games 文档。
+ *
+ * 背景：`arena` 是**玩法结构**属性（跟 `teams` 同级，不是运营可配项），
+ * 但 games 文档以运营后台为准、seed 不碰已存在的行 →
+ * 库里已有的贪吃蛇文档缺这个字段，竞技场判定（room.settings.arena）就全部失效。
+ *
+ * 只按代码里的 SEED_GAMES 补齐「arena」这一个字段，不动其它运营配置。
+ * 跑过一次写标记，之后不再执行。
+ */
+export async function migrateArenaVariants(): Promise<{ games: number; marked: boolean }> {
+  const marker = await MMeta.findById(ARENA_VARIANTS_KEY).lean(true);
+  if (marker) return { games: 0, marked: false };
+
+  let games = 0;
+  for (const seed of SEED_GAMES) {
+    const arenaKeys = (seed.variants || []).filter(v => v.arena === true).map(v => v.key);
+    if (!arenaKeys.length) continue;
+    const game = await MGame.findOne({ slug: seed.slug }).lean(true) as any;
+    if (!game) continue;
+    const variants: any[] = game.variants || [];
+    let changed = false;
+    for (const v of variants) {
+      if (arenaKeys.includes(v.key) && v.arena !== true) {
+        v.arena = true;
+        changed = true;
+      }
+    }
+    if (changed) {
+      await MGame.updateOne({ _id: game._id }, { $set: { variants } });
+      games++;
+    }
+  }
+  await MMeta.updateOne(
+    { _id: ARENA_VARIANTS_KEY },
+    { $set: { value: { games, at: new Date() }, updatedAt: new Date() } },
+    { upsert: true },
+  );
+  if (games) console.log(`🏟 竞技场玩法属性迁移：${games} 个游戏已补 arena 标记`);
+  return { games, marked: true };
+}
+
 /** 服务启动时统一初始化 */
 export async function seedAll() {
   await seedGames();
@@ -253,6 +303,7 @@ export async function seedAll() {
   await seedOfficialRooms();
   await seedAssets();
   await migrateAssetsToGameScope();
+  await migrateArenaVariants();
 }
 
 // 支持作为脚本单独运行：bun run seed（server 目录下）

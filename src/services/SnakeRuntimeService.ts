@@ -141,7 +141,8 @@ export interface SnakeSnapshot {
 
 /** 拾取物的网络形态：只带渲染与判定需要的字段 */
 function toFoodDTO(f: SnakeFoodItem) {
-  return { id: f.id, x: f.x, y: f.y, r: f.r, v: f.v, k: f.k };
+  // t（档位）随快照下发，客户端直接贴对应素材，不再按 radius 阈值反推
+  return { id: f.id, x: f.x, y: f.y, r: f.r, v: f.v, k: f.k, t: f.t ?? 0 };
 }
 
 /** 判断运行时归属所需的最小信息 */

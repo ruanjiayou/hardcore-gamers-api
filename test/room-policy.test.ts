@@ -7,6 +7,7 @@ import {
   canKickMember,
   canTransferOwner,
   hasHumanOwner,
+  isArenaRoom,
   normalizeOwner,
   pickTempOwner,
   resolveLeaveAction,
@@ -319,10 +320,10 @@ describe('离开房间流转', () => {
     }
   });
 
-  test('官方无尽房：真人离开不清场、不回收人机（人机常驻陪玩）', () => {
+  test('官方竞技场：真人离开不清场、不回收人机（人机常驻陪玩）', () => {
     const room = {
       official: true,
-      variant: 'endless',
+      arena: true,
       owner_id: 'p1',
       members: [human('p1'), robot('r1'), robot('r2')],
     };
@@ -335,10 +336,10 @@ describe('离开房间流转', () => {
     }
   });
 
-  test('官方无尽房：真人离开时房主转让给下一位真人对战玩家', () => {
+  test('官方竞技场：真人离开时房主转让给下一位真人对战玩家', () => {
     const room = {
       official: true,
-      variant: 'endless',
+      arena: true,
       owner_id: 'p1',
       members: [human('p1'), robot('r1'), human('p2')],
     };
@@ -348,6 +349,34 @@ describe('离开房间流转', () => {
       expect(d.transferOwnerTo).toBe('p2');
       expect(d.reset).toBe(false);
     }
+  });
+
+  test('竞技场判定只看 arena 标记：光有 variant=endless 不算竞技场', () => {
+    // 竞技场是「玩法结构」属性，判定不依赖任何具体玩法名 ——
+    // 换句话说：variant 叫什么都行，arena 才是开关。
+    const room = {
+      official: true,
+      variant: 'endless',
+      owner_id: 'p1',
+      members: [human('p1'), robot('r1')],
+    };
+    expect(isArenaRoom(room)).toBe(false);
+    // 没有 arena 标记 → 走普通官方房逻辑（最后一个真人走了就清场重置）
+    const d = resolveLeaveAction(room, 'p1');
+    expect(d.action).toBe('leave');
+    if (d.action === 'leave') {
+      expect(d.reset).toBe(true);
+    }
+    // 打了 arena 标记 → 常驻竞技场逻辑
+    expect(isArenaRoom({ ...room, arena: true })).toBe(true);
+  });
+
+  test('isArenaRoom：null / undefined / 非竞技场一律 false', () => {
+    expect(isArenaRoom(null)).toBe(false);
+    expect(isArenaRoom(undefined)).toBe(false);
+    expect(isArenaRoom({})).toBe(false);
+    expect(isArenaRoom({ arena: false })).toBe(false);
+    expect(isArenaRoom({ arena: true })).toBe(true);
   });
 });
 

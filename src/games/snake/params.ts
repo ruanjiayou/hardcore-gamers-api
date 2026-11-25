@@ -35,6 +35,10 @@ export interface SnakeParams {
   boostDrain: number;
   /** 可加速的最低身长（px）：低于此长度加速不生效 */
   boostMinLen: number;
+  /** 磁铁吸附半径（px）：蛇头周围这个范围内的食物被拉过来 */
+  magnetRadius: number;
+  /** 磁铁吸附速度（px/s）：被吸附的食物朝蛇头移动的速度 */
+  magnetPull: number;
 }
 
 /** 代码默认值：数据库没配时的兜底，也是新安装的初始值 */
@@ -48,6 +52,8 @@ export const DEFAULT_SNAKE_PARAMS: SnakeParams = {
   maxLength: 2400,
   boostDrain: 18,
   boostMinLen: 120,
+  magnetRadius: 220,
+  magnetPull: 300,
 };
 
 /** 每个参数的合法区间：管理端校验 + 服务端兜底裁剪都用它 */
@@ -61,6 +67,8 @@ export const SNAKE_PARAM_RANGES: Record<keyof SnakeParams, { min: number; max: n
   maxLength: { min: 200, max: 20000 },
   boostDrain: { min: 0, max: 200 },
   boostMinLen: { min: 0, max: 5000 },
+  magnetRadius: { min: 0, max: 800 },
+  magnetPull: { min: 0, max: 1200 },
 };
 
 /**
@@ -94,6 +102,8 @@ export const SNAKE_PARAM_META: SnakeParamMeta[] = [
   { key: 'maxLength', label: '身长上限', group: '体型', step: 50, unit: 'px', desc: '吃食物后能达到的最大身长。' },
   { key: 'boostDrain', label: '加速消耗', group: '加速代价', step: 1, unit: 'px/s', desc: '加速时每秒扣除的身长。0 表示不消耗。' },
   { key: 'boostMinLen', label: '加速门槛', group: '加速代价', step: 10, unit: 'px', desc: '身长低于本值时加速不生效（按钮变灰）。' },
+  { key: 'magnetRadius', label: '磁铁范围', group: '道具', step: 10, unit: 'px', desc: '磁铁道具的吸附半径。蛇头周围这个范围内的食物被拉过来。' },
+  { key: 'magnetPull', label: '磁铁吸力', group: '道具', step: 10, unit: 'px/s', desc: '磁铁道具把食物拉向蛇头的速度。' },
 ];
 
 /**

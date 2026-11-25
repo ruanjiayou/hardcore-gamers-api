@@ -44,15 +44,14 @@ export const SNAKE_ITEM_COUNT = 8;
  * 食物分档：小食物数量多、大食物数量少。
  * - radius 决定视觉大小与碰撞判定；
  * - value 决定收益（同时按比例决定身体增长，见 SNAKE_GROW_PER_SCORE）；
- * - weight 是抽取权重：60 / 28 / 12（期望单颗价值 ≈ 12.96）。
+ * - weight 是抽取权重：60 / 28 / 12（期望单颗价值 ≈ 12.96）；
+ * - minValue 是"进入这一档"的分值门槛（残骸的价值是任意整数，按它归档）。
  */
 export const SNAKE_FOOD_TIERS = [
-  { radius: 6, value: 6, weight: 60 },
-  { radius: 12, value: 18, weight: 28 },
-  { radius: 18, value: 36, weight: 12 },
+  { radius: 6, value: 6, weight: 60, minValue: 0 },
+  { radius: 12, value: 18, weight: 28, minValue: 8 },
+  { radius: 18, value: 36, weight: 12, minValue: 20 },
 ] as const;
-/** 最小档（小食物）的分值 */
-export const SNAKE_FOOD_SCORE = SNAKE_FOOD_TIERS[0].value;
 /** 每 1 分值增长的身体像素 */
 export const SNAKE_GROW_PER_SCORE = 3;
 
@@ -75,6 +74,12 @@ export interface SnakeFoodItem {
   v: number;
   /** 类型：0 食物 / 1 残骸 / ≥2 道具（见 SNAKE_ITEM_DEFS） */
   k: number;
+  /**
+   * 外观档位索引（0 小 / 1 中 / 2 大）：随快照下发，客户端直接贴对应素材。
+   * 由服务端判定后下发，客户端不再按 radius 阈值反推 —— 两端各自反推必然漂移
+   * （服务端三档半径 6/12/18，客户端阈值曾写成 10/7，导致中档被贴成大档）。
+   */
+  t: number;
 }
 
 /**
@@ -109,8 +114,13 @@ export const SNAKE_ITEM_RADIUS = SNAKE_ITEM_DEFS[0].radius;
 export const SNAKE_KIND_MAGNET = 2;
 export const SNAKE_KIND_STAR = 3;
 
-export const SNAKE_MAGNET_RADIUS = 220;
-export const SNAKE_MAGNET_PULL = 300;
+/**
+ * 磁铁的吸附半径 / 拉力：**不写死**，由本局冻结的 params 决定
+ * （`magnetRadius` / `magnetPull`），后台可在管理端改。
+ * 客户端画提示圈时读快照里的同一份值，两端不会漂移。
+ */
+export const SNAKE_MAGNET_RADIUS = DEFAULT_SNAKE_PARAMS.magnetRadius;
+export const SNAKE_MAGNET_PULL = DEFAULT_SNAKE_PARAMS.magnetPull;
 
 /**
  * 尸体残骸：蛇死后沿身体留下一串可被吃的残骸。
@@ -221,8 +231,6 @@ export const SNAKE_INVINCIBLE_MS = 3000;
 
 /** 团队模式限时（毫秒）：8 分钟，时间到按团队总分判胜 */
 export const SNAKE_TEAM_MATCH_MS = 480_000;
-/** 团队"先到目标分即胜"，0 = 关闭（只按时间与存活判） */
-export const SNAKE_TEAM_TARGET_SCORE = 0;
 
 /** 内部路径采样步长（像素）：越小身体曲线越顺，越大内存/CPU 越省 */
 export const SNAKE_PATH_STEP = 3;
@@ -350,9 +358,19 @@ const round1 = (n: number) => Math.round(n * 10) / 10;
 
 /** 价值 → 外观半径（普通食物与残骸共用同一套映射） */
 export function snakeRadiusForValue(v: number): number {
-  if (v >= 20) return SNAKE_FOOD_TIERS[2].radius;
-  if (v >= 8) return SNAKE_FOOD_TIERS[1].radius;
-  return SNAKE_FOOD_TIERS[0].radius;
+  return SNAKE_FOOD_TIERS[snakeTierForValue(v)].radius;
+}
+
+/**
+ * 价值 → 档位索引（0 小 / 1 中 / 2 大）：档位是唯一真相源，
+ * 半径由档位派生，不再维护第二套阈值。
+ */
+export function snakeTierForValue(v: number): number {
+  let tier = 0;
+  for (let i = 0; i < SNAKE_FOOD_TIERS.length; i++) {
+    if (v >= SNAKE_FOOD_TIERS[i].minValue) tier = i;
+  }
+  return tier;
 }
 
 /** 按权重抽一个食物档位 */
@@ -395,6 +413,7 @@ export function spawnFood(state: SnakeState, random: () => number = Math.random)
       r: tier.radius,
       v: tier.value,
       k: SNAKE_KIND_FOOD,
+      t: SNAKE_FOOD_TIERS.indexOf(tier),
     };
     state.food.push(item);
     return item;
@@ -418,6 +437,8 @@ export function spawnItem(state: SnakeState, random: () => number = Math.random)
       r: def.radius,
       v: 0,
       k: def.kind,
+      // 道具没有大小档位（贴图由 kind 决定），t 固定为 0
+      t: 0,
     };
     state.food.push(item);
     return item;
@@ -715,7 +736,8 @@ function approaching(a: Move, b: Move): boolean {
  * 拉过来的食物下一 tick 就会被判定吃掉 —— 这是"自动收菜"的手感来源。
  */
 function applyMagnet(state: SnakeState, now: number, dt: number) {
-  const pull = SNAKE_MAGNET_PULL * dt;
+  const p = state.params || DEFAULT_SNAKE_PARAMS;
+  const pull = p.magnetPull * dt;
   for (const s of state.snakes) {
     if (!s.alive) continue;
     if ((s.magnetUntil || 0) <= now) continue;
@@ -725,7 +747,7 @@ function applyMagnet(state: SnakeState, now: number, dt: number) {
       const dx = s.x - f.x;
       const dy = s.y - f.y;
       const d = Math.hypot(dx, dy);
-      if (d > SNAKE_MAGNET_RADIUS || d < 1e-6) continue;
+      if (d > p.magnetRadius || d < 1e-6) continue;
       const step = Math.min(pull, d);
       f.x = round1(f.x + (dx / d) * step);
       f.y = round1(f.y + (dy / d) * step);
@@ -790,19 +812,24 @@ function dropCorpsesOnce(state: SnakeState, s: SnakePlayerState): 'ok' | 'full' 
   const remainder = Math.min(targetTotal - per * count, count - per);
 
   // 沿身体摆放：蛇头在 path[0]，尾巴在末尾
-  const spine = snakeSpine(s);
+  // 采样上限用本局冻结的身长上限（与运行时快照同一份），否则运营调大 maxLength
+  // 后玩家蛇身变长、残骸撒点上限却还是旧常量 —— 参数只生效了一半
+  const maxLength = (state.params || DEFAULT_SNAKE_PARAMS).maxLength;
+  const spine = snakeSpine(s, SNAKE_SEG_SPACING, maxLength);
   if (!spine.length) return 'empty';
   const step = count > 1 ? (spine.length - 1) / (count - 1) : 0;
   for (let i = 0; i < count; i++) {
     const p = spine[Math.min(spine.length - 1, Math.round(i * step))];
     const v = per + (i < remainder ? 1 : 0);
+    const tier = snakeTierForValue(v);
     state.food.push({
       id: nextId(state),
       x: round1(p[0]),
       y: round1(p[1]),
-      r: snakeRadiusForValue(v),
+      r: SNAKE_FOOD_TIERS[tier].radius,
       v,
       k: SNAKE_KIND_CORPSE,
+      t: tier,
     });
   }
   return 'ok';
@@ -940,7 +967,13 @@ export function stepSnake(
       if (def) {
         // 道具：刷新式生效（不叠加），效果按注册表 key 分派
         if (def.key === 'magnet') s.magnetUntil = now + def.durationMs;
-        else if (def.key === 'star') s.invincibleUntil = Math.max(s.invincibleUntil || 0, now + def.durationMs);
+        else if (def.key === 'star') {
+          // 星星 = 免身体与头对头（不免撞墙），持续 def.durationMs
+          // starUntil 专用于视觉（金圈），invincibleUntil 承担无敌判定：
+          // 两者独立记录，客户端才能区分"星星金圈"和"重生护盾"
+          s.starUntil = Math.max(s.starUntil || 0, now + def.durationMs);
+          s.invincibleUntil = Math.max(s.invincibleUntil || 0, now + def.durationMs);
+        }
       } else {
         // 普通食物 / 尸体残骸：加分并按分值增长身体
         s.score += f.v;
@@ -1070,7 +1103,14 @@ function championPlayerOf(state: SnakeState, team: string): string {
 
 /**
  * 网络用身体采样：从蛇头沿路径按固定弧长取点。
+ *
  * 固定间距保证"第 i 个点 ≈ 距头 i*spacing 的位置"，客户端可以按下标插值而不抖动。
+ *
+ * **末尾必须补一个精确的尾巴点**：固定间距的采样只会落在身长的整数倍上
+ * （身长 160px → 最后一个采样点只到 154px），真实尾巴那一截永远采不到。
+ * 客户端的本地预测靠"沿身体插值出尾点"让尾巴连续前进，
+ * 少了这个精确尾点，插值就永远找不到落点 —— 尾巴会停在原地，
+ * 只在下一帧快照到达时跳一下（肉眼看到"间隔前进"）。
  *
  * @param maxLength 本局的身长上限（决定采样点数量上限）；缺省用代码默认值。
  */
@@ -1078,10 +1118,17 @@ export function snakeSpine(s: SnakePlayerState, spacing = SNAKE_SEG_SPACING, max
   const path = s.path;
   if (!path.length) return [[Math.round(s.x), Math.round(s.y)]];
   const out: [number, number][] = [[Math.round(path[0][0]), Math.round(path[0][1])]];
-  const maxPts = Math.ceil(maxLength / spacing) + 2;
+  // +3：常规采样点 + 精确尾点 + 一点余量
+  const maxPts = Math.ceil(maxLength / spacing) + 3;
   let next = spacing;
   let acc = 0;
-  for (let i = 1; i < path.length && out.length < maxPts; i++) {
+  /** 是否走完了整条路径（没被 maxPts 截断） */
+  let fullPath = true;
+  for (let i = 1; i < path.length; i++) {
+    if (out.length >= maxPts) {
+      fullPath = false;
+      break;
+    }
     const ax = path[i - 1][0];
     const ay = path[i - 1][1];
     const bx = path[i][0];
@@ -1094,6 +1141,16 @@ export function snakeSpine(s: SnakePlayerState, spacing = SNAKE_SEG_SPACING, max
       next += spacing;
     }
     acc += seg;
+  }
+  // 补精确尾点：路径末端（truncatePath 保证它正好落在身长处）
+  // 只在两点几乎重合时才跳过 —— 用"距离"判定而不是"余数阈值"，
+  // 否则身长在阈值附近时点数会每 tick 变（远端蛇的按点插值会整条重置 → 抖动）
+  if (fullPath && out.length < maxPts) {
+    const tail = path[path.length - 1];
+    const last = out[out.length - 1];
+    if (Math.hypot(tail[0] - last[0], tail[1] - last[1]) > 1e-6) {
+      out.push([Math.round(tail[0]), Math.round(tail[1])]);
+    }
   }
   return out;
 }
