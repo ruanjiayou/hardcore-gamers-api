@@ -26,9 +26,19 @@ export const MGame = mongoose.model<IGame>('games', new mongoose.Schema({
     mode: String, // fixed/team/custom
     roles: [{ name: String, size: Number }]
   },
+  /**
+   * 玩法可调参数（手感配置），按游戏各自定义、互不干扰。
+   *
+   * 例：贪吃蛇 `{ speedMax, speedMin, boostMult, turnRadius, ... }`。
+   * - 缺字段 → 用代码里的默认值（`games/snake/params.ts` 的 DEFAULT_SNAKE_PARAMS）；
+   * - 服务端**建局时冻结**这份配置进对局状态，整局不变；
+   * - 客户端从对局快照里读同一份，保证预测公式与服务端权威一致。
+   * 管理端可编辑（ADMIN-012）。
+   */
+  config: mongoose.SchemaTypes.Mixed,
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
-}, { collection: 'games', versionKey: false, }));
+}, { collection: 'games', versionKey: false }));
 
 export const MRoom = mongoose.model<IRoom>('rooms', new mongoose.Schema({
   _id: String,

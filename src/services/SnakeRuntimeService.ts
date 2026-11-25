@@ -16,8 +16,8 @@ import type { Server } from 'socket.io';
 import { MMatch, MPlayer, MRoom } from '../models';
 import constant from '../constant';
 import {
-  SNAKE_BOOST_MIN_LEN,
   SNAKE_RADIUS,
+  SNAKE_SEG_SPACING,
   SNAKE_TICK_MS,
   addSnake as addSnakeToState,
   createSnakeState,
@@ -32,6 +32,7 @@ import {
   type SnakeState,
   type SnakeVariant,
 } from '../games/snake/rules';
+import { DEFAULT_SNAKE_PARAMS, resolveSnakeParams, type SnakeParams } from '../games/snake/params';
 
 export interface SnakeFinishInfo {
   room_id: string;
@@ -77,6 +78,11 @@ export interface SnakeSnapshot {
   radius: number;
   tick: number;
   variant: SnakeVariant;
+  /**
+   * 本局生效的可调参数（速度 / 加速 / 转向 / 体型）。
+   * 客户端用它做本地预测 —— 与服务端权威必须是同一份数值，否则蛇会「拉丝」。
+   */
+  params?: SnakeParams;
   /** 座位表（id + 昵称 + 队伍 + 蛇皮肤），客户端据此显示玩家名与头顶标签 */
   players: { id: string; nickname: string; team: string; skin: string }[];
   /**
@@ -288,7 +294,11 @@ export class SnakeRuntimeService {
       if (p?._id && p.team) teams[String(p._id)] = String(p.team);
     }
 
-    const state = createSnakeState(ids, { variant, teams, random: Math.random });
+    // 本局冻结的参数：建局时写进 match.curr_state.params（见 RoomService.startGame）。
+    // 老对局没有这个字段 → 用代码默认值。
+    const params = resolveSnakeParams(match.curr_state?.params);
+
+    const state = createSnakeState(ids, { variant, teams, random: Math.random, params });
     const names = new Map<string, string>();
     const skins = new Map<string, string>();
     for (const p of match.curr_state?.players || []) {
@@ -668,6 +678,8 @@ export class SnakeRuntimeService {
     const food = state.food;
     const full = opts.full === true || rt.needFull > 0;
     const foodPayload = computeFoodPayload(rt.foodPos, food, full);
+    // 本局冻结的参数（老对局没有则用代码默认值）
+    const p = state.params || DEFAULT_SNAKE_PARAMS;
     // 记下本帧坐标，供下一帧算增删与位移
     rt.foodPos = new Map(food.map(f => [f.id, { x: f.x, y: f.y }]));
     rt.needFull = 0;
@@ -677,6 +689,11 @@ export class SnakeRuntimeService {
       radius: SNAKE_RADIUS,
       tick: state.tick,
       variant: state.variant || 'team',
+      /**
+       * 本局生效的可调参数：客户端用它做本地预测，
+       * 保证与服务端权威用的是同一份数值（否则蛇会「拉丝」）。
+       */
+      params: state.params || DEFAULT_SNAKE_PARAMS,
       players: state.snakes.map(s => ({
         id: s.id,
         nickname: rt.names.get(s.id) || '玩家',
@@ -691,13 +708,13 @@ export class SnakeRuntimeService {
         x: Math.round(s.x * 10) / 10,
         y: Math.round(s.y * 10) / 10,
         angle: Math.round(s.angle * 1000) / 1000,
-        pts: snakeSpine(s),
+        pts: snakeSpine(s, SNAKE_SEG_SPACING, p.maxLength),
         length: Math.round(s.length),
         alive: s.alive,
         score: s.score,
         best: Math.max(s.score || 0, s.best || 0),
         invincible: Math.max(0, (s.invincibleUntil || 0) - now),
-        boosting: s.boostHeld === true && s.length > SNAKE_BOOST_MIN_LEN && s.alive,
+        boosting: s.boostHeld === true && s.length > p.boostMinLen && s.alive,
         boostHeld: s.boostHeld === true,
         magnet: Math.max(0, (s.magnetUntil || 0) - now),
         star: Math.max(0, (s.starUntil || 0) - now),

@@ -45,6 +45,8 @@ export interface IGame {
   createdAt: Date;
   updatedAt: Date;
   role_config: object;
+  /** 玩法可调参数（手感配置），各游戏字段自定义、互不干扰 */
+  config?: Record<string, any>;
   /** 玩法变体（单人/房间混合的游戏才需要），缺省按 mode 单一形态 */
   variants?: IGameVariant[];
   /** 排行榜分榜（缺省只有一张总榜，读 MPlayer.score） */

@@ -22,6 +22,7 @@ import {
   shouldTakeOwnership,
 } from '../utils/roomPolicy'
 import { snakeRuntimeService } from './SnakeRuntimeService';
+import { getGameParams } from './GameParamsService';
 
 export class RoomService {
 
@@ -545,13 +546,20 @@ export class RoomService {
     const variant = room.settings?.variant as string | undefined;
     const variantState = variant ? { variant } : {};
 
+    // 玩法可调参数（贪吃蛇的速度/加速/转向…）：**建局这一刻冻结**进对局状态。
+    // - 运营在管理端改 games.config 后，新开的局用新参数；
+    // - 进行中的对局不受影响（整局参数不变，避免前后半段手感突变）；
+    // - 落库后即使服务端重启重建运行时，也是同一份参数（不会与在线客户端漂移）。
+    const params = await getGameParams(game.slug);
+    const paramsState = Object.keys(params).length ? { params } : {};
+
     await MMatch.create({
       _id: match_id,
       game_id: room.game_id,
       room_id: room._id,
       status: constant.MATCH.STATUS.playing,
-      init_state: { ...state, players, ...variantState, ...(timeControl ? { timeControl } : {}) },
-      curr_state: { ...state, players, curr_turn, ...variantState, ...(timeControl ? { timeControl } : {}) },
+      init_state: { ...state, players, ...variantState, ...paramsState, ...(timeControl ? { timeControl } : {}) },
+      curr_state: { ...state, players, curr_turn, ...variantState, ...paramsState, ...(timeControl ? { timeControl } : {}) },
       players: assigned,
       createdAt: new Date(),
       updatedAt: new Date(),

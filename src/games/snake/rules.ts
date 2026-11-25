@@ -29,6 +29,8 @@
  * 常量与判定顺序的唯一来源是《贪吃蛇大作战 规则规格》，改动前先改规格文档。
  */
 
+import { DEFAULT_SNAKE_PARAMS, type SnakeParams } from './params';
+
 export type SnakeVariant = 'endless' | 'team';
 
 /** 世界尺寸（像素）：远大于视口，镜头跟随主角 */
@@ -150,48 +152,60 @@ export const SNAKE_HEAD_RADIUS = 16;
  * （ω = v / R，R 固定），于是长蛇又慢又难转向，规避操作变难、收益变高，
  * 形成「吃得多 = 灵活度下降」的取舍。单条命越长越难跑，这正是原作的策略纵深。
  *
- * 线性插值：身长 SNAKE_BODY_LENGTH → SNAKE_SPEED_MAX，身长 SNAKE_MAX_LENGTH → SNAKE_SPEED_MIN。
+ * 线性插值：身长 bodyLength → speedMax，身长 maxLength → speedMin。
+ *
+ * ⚠️ 这些值**可被数据库覆盖**（运营在管理端改 `games.config`，下一局生效），
+ * 详见 `params.ts`。下面的常量只是**代码默认值**的别名，真实值由对局的
+ * `params` 决定 —— 客户端也从服务端快照读同一份，两端永远一致。
  */
-export const SNAKE_SPEED_MAX = 110;
-export const SNAKE_SPEED_MIN = 62;
+export const SNAKE_SPEED_MAX = DEFAULT_SNAKE_PARAMS.speedMax;
+export const SNAKE_SPEED_MIN = DEFAULT_SNAKE_PARAMS.speedMin;
 /**
  * 加速倍率：加速速度 = 当前巡航速度 × 本倍率。
  * 不再写死「加速后的绝对速度」—— 巡航速度已经随身长变化，写死绝对值会让长蛇加速
  * 变成 5 倍速的荒谬手感。倍率恒定才符合直觉：加速永远是「快一点」，不是「飞」。
  */
-export const SNAKE_BOOST_MULT = 1.85;
+export const SNAKE_BOOST_MULT = DEFAULT_SNAKE_PARAMS.boostMult;
 /**
  * 最小转弯半径（像素）：手感用"能拐多小的弯"描述，角速度由 ω = v / R 推导。
  * 半径固定 → 速度越慢角速度越小 → 长蛇转向更迟钝（与速度曲线叠加，手感一致）。
  */
-export const SNAKE_MIN_TURN_RADIUS = 25;
-export const SNAKE_BOOST_MIN_TURN_RADIUS = 52;
+export const SNAKE_MIN_TURN_RADIUS = DEFAULT_SNAKE_PARAMS.turnRadius;
+export const SNAKE_BOOST_MIN_TURN_RADIUS = DEFAULT_SNAKE_PARAMS.boostTurnRadius;
 
 /** 初始身长 / 上限（像素） */
-export const SNAKE_BODY_LENGTH = 160;
-export const SNAKE_MAX_LENGTH = 2400;
+export const SNAKE_BODY_LENGTH = DEFAULT_SNAKE_PARAMS.bodyLength;
+export const SNAKE_MAX_LENGTH = DEFAULT_SNAKE_PARAMS.maxLength;
 
 /**
  * 巡航速度（像素/秒）：按身长线性插值。
- * 身长 = 初始长度 → SNAKE_SPEED_MAX（最快）；身长 = 上限 → SNAKE_SPEED_MIN（最慢）。
+ * 身长 = 初始长度 → speedMax（最快）；身长 = 上限 → speedMin（最慢）。
  *
- * 客户端与 AI 侧必须镜像同一个公式（否则本地预测与服务端权威值漂移，蛇会「拉丝」）。
+ * @param params 本局的参数（来自对局状态，可被数据库配置覆盖）。
+ *               缺省用代码默认值 —— 单测与旧调用方不需要额外准备。
+ *
+ * 客户端与 AI 侧必须镜像同一个公式（否则本地预测与服务端权威值漂移，蛇会「拉丝」），
+ * 所以客户端拿到的也是服务端下发的同一份 params。
  */
-export function snakeCruiseSpeed(length: number): number {
+export function snakeCruiseSpeed(length: number, params?: SnakeParams): number {
+  const p = params || DEFAULT_SNAKE_PARAMS;
   const len = Math.max(0, length || 0);
-  const t = Math.min(1, Math.max(0, (len - SNAKE_BODY_LENGTH) / (SNAKE_MAX_LENGTH - SNAKE_BODY_LENGTH)));
-  return SNAKE_SPEED_MAX + (SNAKE_SPEED_MIN - SNAKE_SPEED_MAX) * t;
+  const span = Math.max(1, p.maxLength - p.bodyLength);
+  const t = Math.min(1, Math.max(0, (len - p.bodyLength) / span));
+  return p.speedMax + (p.speedMin - p.speedMax) * t;
 }
 
 /** 当前身长下的实际移动速度（加速时 = 巡航 × 倍率） */
-export function snakeMoveSpeed(length: number, boosting: boolean): number {
-  return snakeCruiseSpeed(length) * (boosting ? SNAKE_BOOST_MULT : 1);
+export function snakeMoveSpeed(length: number, boosting: boolean, params?: SnakeParams): number {
+  const p = params || DEFAULT_SNAKE_PARAMS;
+  return snakeCruiseSpeed(length, p) * (boosting ? p.boostMult : 1);
 }
 
 /** 当前身长下的转向角速度（rad/s）：ω = v / R，R 固定 → 速度越慢转得越迟钝 */
-export function snakeTurnRate(length: number, boosting: boolean): number {
-  const r = boosting ? SNAKE_BOOST_MIN_TURN_RADIUS : SNAKE_MIN_TURN_RADIUS;
-  return snakeMoveSpeed(length, boosting) / r;
+export function snakeTurnRate(length: number, boosting: boolean, params?: SnakeParams): number {
+  const p = params || DEFAULT_SNAKE_PARAMS;
+  const r = boosting ? p.boostTurnRadius : p.turnRadius;
+  return snakeMoveSpeed(length, boosting, p) / Math.max(1, r);
 }
 
 /**
@@ -200,8 +214,8 @@ export function snakeTurnRate(length: number, boosting: boolean): number {
  * - BOOST_MIN_LEN：低于此长度无法加速，加速中也扣不到它以下。
  * 加速不扣分、不影响分数；吃食物可恢复长度。
  */
-export const SNAKE_BOOST_DRAIN = 18;
-export const SNAKE_BOOST_MIN_LEN = 120;
+export const SNAKE_BOOST_DRAIN = DEFAULT_SNAKE_PARAMS.boostDrain;
+export const SNAKE_BOOST_MIN_LEN = DEFAULT_SNAKE_PARAMS.boostMinLen;
 /** 重生无敌时间（毫秒）。死亡后由玩家点「重生」才复活，不自动重生 */
 export const SNAKE_INVINCIBLE_MS = 3000;
 
@@ -273,6 +287,13 @@ export interface SnakeState {
   endsAt: number;
   /** 可拾取物自增 id（快照增量与客户端删除依赖它） */
   nextItemId: number;
+  /**
+   * 本局生效的可调参数（速度 / 转向 / 体型）。
+   *
+   * **建局时冻结**：整局不变，中途改数据库配置不影响进行中的对局。
+   * 客户端从快照里读同一份，保证预测公式与服务端权威完全一致。
+   */
+  params?: SnakeParams;
 }
 
 export interface SnakeStepResult {
@@ -459,15 +480,15 @@ function randomSpawn(
   };
 }
 
-function newSnake(id: string, x: number, y: number, angle: number, team = ''): SnakePlayerState {
+function newSnake(id: string, x: number, y: number, angle: number, team = '', bodyLength = SNAKE_BODY_LENGTH): SnakePlayerState {
   return {
     id,
     x,
     y,
     angle: normalizeAngle(angle),
     targetAngle: normalizeAngle(angle),
-    path: straightPath(x, y, angle, SNAKE_BODY_LENGTH),
-    length: SNAKE_BODY_LENGTH,
+    path: straightPath(x, y, angle, bodyLength),
+    length: bodyLength,
     alive: true,
     score: 0,
     best: 0,
@@ -490,6 +511,11 @@ export interface CreateSnakeOptions {
   variant?: SnakeVariant;
   /** 玩家 -> 队伍（团队模式） */
   teams?: Record<string, string>;
+  /**
+   * 本局生效的可调参数（建局时由服务端从数据库配置解析并冻结）。
+   * 缺省用代码默认值。
+   */
+  params?: SnakeParams;
 }
 
 /**
@@ -506,7 +532,13 @@ export function createSnakeState(playerIds: string[], opts: CreateSnakeOptions =
     // 规格 §9.3：variant 必须显式传参，缺省按无尽模式
     variant = 'endless',
     teams = {},
+    params,
   } = opts;
+
+  // 参数在建局这一刻冻结：整局不变，客户端也从快照读同一份。
+  // **复制一份**（不是存引用）—— 否则调用方后续改动配置对象会污染已建的对局，
+  // 「建局时冻结」的保证就破了。
+  const p: SnakeParams = { ...(params || DEFAULT_SNAKE_PARAMS) };
 
   const state: SnakeState = {
     w: width,
@@ -520,6 +552,7 @@ export function createSnakeState(playerIds: string[], opts: CreateSnakeOptions =
     // 团队模式限时 8 分钟；无尽模式不限时（对局永不结束）
     endsAt: variant === 'team' ? Date.now() + SNAKE_TEAM_MATCH_MS : 0,
     nextItemId: 1,
+    params: p,
   };
 
   for (const id of playerIds) addSnake(state, id, random, teams[id] || '');
@@ -531,7 +564,7 @@ export function createSnakeState(playerIds: string[], opts: CreateSnakeOptions =
 /** 在现有局面里加一条蛇（开局 / 中途加入 / 重连补位都走它，保证避开场上已有的蛇） */
 export function addSnake(state: SnakeState, id: string, random: () => number = Math.random, team = ''): SnakePlayerState {
   const spot = randomSpawn(state, random);
-  const snake = newSnake(id, spot.x, spot.y, spot.angle, team);
+  const snake = newSnake(id, spot.x, spot.y, spot.angle, team, (state.params || DEFAULT_SNAKE_PARAMS).bodyLength);
   state.snakes.push(snake);
   return snake;
 }
@@ -551,7 +584,7 @@ export function steerSnake(state: SnakeState, playerId: string, angle: number): 
 
 /**
  * 加速按钮的按住状态（每 tick 可更新，无 CD、无时长上限）。
- * 真正是否加速由 stepSnake 判断：`boostHeld && length > SNAKE_BOOST_MIN_LEN`。
+ * 真正是否加速由 stepSnake 判断：`boostHeld && length > boostMinLen`（取本局参数）。
  */
 export function setBoost(state: SnakeState, playerId: string, held: boolean): boolean {
   if (state.status !== 'playing') return false;
@@ -571,12 +604,13 @@ export function respawnSnake(
   const snake = state.snakes.find(s => s.id === playerId);
   if (!snake || snake.alive) return false;
   const spot = randomSpawn(state, random);
+  const bodyLength = (state.params || DEFAULT_SNAKE_PARAMS).bodyLength;
   snake.x = spot.x;
   snake.y = spot.y;
   snake.angle = normalizeAngle(spot.angle);
   snake.targetAngle = snake.angle;
-  snake.path = straightPath(spot.x, spot.y, spot.angle, SNAKE_BODY_LENGTH);
-  snake.length = SNAKE_BODY_LENGTH;
+  snake.path = straightPath(spot.x, spot.y, snake.angle, bodyLength);
+  snake.length = bodyLength;
   snake.alive = true;
   snake.score = 0;
   snake.respawnAt = 0;
@@ -794,6 +828,8 @@ export function stepSnake(
   const random = opts.random ?? Math.random;
   const dt = clamp(opts.dt ?? SNAKE_TICK_MS / 1000, 0.004, 0.25);
   const variant: SnakeVariant = state.variant || 'endless';
+  // 本局冻结的参数（建局时从数据库配置解析）；老对局没有则用代码默认值
+  const p = state.params || DEFAULT_SNAKE_PARAMS;
   const died: string[] = [];
   const ate: string[] = [];
   let over = false;
@@ -803,10 +839,10 @@ export function stepSnake(
   for (const s of state.snakes) {
     if (!s.alive) continue;
     // 按住加速 + 身长够才生效；加速时转弯半径更大（更危险）
-    const boosting = s.boostHeld === true && (s.length || 0) > SNAKE_BOOST_MIN_LEN;
+    const boosting = s.boostHeld === true && (s.length || 0) > p.boostMinLen;
     // 速度随身长递减（贪吃蛇大作战手感）：长蛇更慢，角速度也随之下降
-    const speed = snakeMoveSpeed(s.length || 0, boosting);
-    const rate = snakeTurnRate(s.length || 0, boosting);
+    const speed = snakeMoveSpeed(s.length || 0, boosting, p);
+    const rate = snakeTurnRate(s.length || 0, boosting, p);
     const angle = turnToward(s.angle, s.targetAngle, rate * dt);
     moves.push({
       s,
@@ -879,7 +915,7 @@ export function stepSnake(
     pushPath(s, m.ox, m.oy);
     if (m.boosting) {
       // 加速的代价：身长按秒扣，扣到下限为止（不扣分、不影响分数）
-      s.length = Math.max(SNAKE_BOOST_MIN_LEN, s.length - SNAKE_BOOST_DRAIN * dt);
+      s.length = Math.max(p.boostMinLen, s.length - p.boostDrain * dt);
       // **不清掉 boostHeld**：玩家的「按住」意图由玩家自己解除（松手）。
       // 扣到下限时加速自然不再生效（m.boosting 判定含身长条件），
       // 但按住状态保留 —— 吃到食物长回来后立刻自动恢复加速，不用重新按。
@@ -909,7 +945,7 @@ export function stepSnake(
         // 普通食物 / 尸体残骸：加分并按分值增长身体
         s.score += f.v;
         s.best = Math.max(s.best || 0, s.score);
-        s.length = Math.min(SNAKE_MAX_LENGTH, s.length + f.v * SNAKE_GROW_PER_SCORE);
+        s.length = Math.min(p.maxLength, s.length + f.v * SNAKE_GROW_PER_SCORE);
       }
       if (!ate.includes(s.id)) ate.push(s.id);
     }
@@ -1035,12 +1071,14 @@ function championPlayerOf(state: SnakeState, team: string): string {
 /**
  * 网络用身体采样：从蛇头沿路径按固定弧长取点。
  * 固定间距保证"第 i 个点 ≈ 距头 i*spacing 的位置"，客户端可以按下标插值而不抖动。
+ *
+ * @param maxLength 本局的身长上限（决定采样点数量上限）；缺省用代码默认值。
  */
-export function snakeSpine(s: SnakePlayerState, spacing = SNAKE_SEG_SPACING): [number, number][] {
+export function snakeSpine(s: SnakePlayerState, spacing = SNAKE_SEG_SPACING, maxLength = SNAKE_MAX_LENGTH): [number, number][] {
   const path = s.path;
   if (!path.length) return [[Math.round(s.x), Math.round(s.y)]];
   const out: [number, number][] = [[Math.round(path[0][0]), Math.round(path[0][1])]];
-  const maxPts = Math.ceil(SNAKE_MAX_LENGTH / spacing) + 2;
+  const maxPts = Math.ceil(maxLength / spacing) + 2;
   let next = spacing;
   let acc = 0;
   for (let i = 1; i < path.length && out.length < maxPts; i++) {

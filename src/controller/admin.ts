@@ -21,6 +21,8 @@ import { addRobotToRoom } from '../services/RobotService';
 import { invalidatePackCache } from '../services/VoicePackService';
 import { assetsService, kindOfGroup, listPacks, purgePack } from '../services/AssetsService';
 import { roomService } from '../services/RoomService';
+import { getGameParamSchema } from '../services/GameParamsService';
+import { getGameDefaultParams, isGameParamsDefault, normalizeGameParams } from '../games/paramsRegistry';
 import GameLogics from '../games';
 
 const router = Router();
@@ -133,11 +135,29 @@ router.get('/games', wrap(async (_req, res) => {
       rooms: byGame.get(g._id) || 0,
       // 代码是否已注册：没注册的游戏能建也能上架，但一开局就 500，管理端要先看得见
       code_registered: Boolean(GameLogics[g.slug]),
+      // 玩法参数（手感配置）：默认值得服务端下发，前端不自己维护字段清单
+      default_config: getGameDefaultParams(g.slug),
+      // 存的值是否已经偏离默认值（管理端列表显示「已自定义」标记）
+      config_overridden: !isGameParamsDefault(g.slug, (g as any).config),
     })),
   });
 }));
 
-const GAME_WRITABLE = ['slug', 'title', 'desc', 'genre', 'icon', 'status', 'mode', 'numbers', 'variants', 'boards', 'role_config'];
+/**
+ * 某个游戏的可配置参数说明（标签 / 区间 / 单位 / 默认值 / 当前生效值）。
+ *
+ * 前端据此渲染表单 —— 加参数只改服务端的参数表，管理端自动多出一项。
+ */
+router.get('/params/:slug', wrap(async (req, res) => {
+  const schema = await getGameParamSchema(req.params.slug);
+  if (!schema) {
+    res.json({ code: 0, data: null });
+    return;
+  }
+  res.json({ code: 0, data: { slug: req.params.slug, params: schema } });
+}));
+
+const GAME_WRITABLE = ['slug', 'title', 'desc', 'genre', 'icon', 'status', 'mode', 'numbers', 'variants', 'boards', 'role_config', 'config'];
 
 router.post('/games', wrap(async (req, res) => {
   const body = req.body || {};
@@ -148,6 +168,8 @@ router.post('/games', wrap(async (req, res) => {
   for (const k of GAME_WRITABLE) if (body[k] !== undefined) game[k] = body[k];
   game.slug = slug;
   game.title = game.title || slug;
+  // 玩法参数：按该游戏自己的解析器校验裁剪后再存（存解析后的完整值）
+  if (game.config !== undefined) game.config = normalizeGameParams(slug, game.config ?? {});
   game.createdAt = game.updatedAt = new Date();
   await MGame.create(game);
   res.json({ code: 0, data: game, message: GameLogics[slug] ? '已创建' : '已创建，但该 slug 尚无服务端逻辑，开局会失败' });
@@ -156,11 +178,24 @@ router.post('/games', wrap(async (req, res) => {
 router.put('/games/:id', wrap(async (req, res) => {
   const patch: any = { updatedAt: new Date() };
   for (const k of GAME_WRITABLE) if (req.body?.[k] !== undefined) patch[k] = req.body[k];
+  // 玩法参数（config）：按该游戏自己的解析器校验裁剪后再存。
+  // 存的是解析后的完整值 —— 数据库自解释，代码改默认值不会悄悄改掉运营调过的游戏。
+  // 传 null 表示「清除自定义，回到代码默认值」。
+  if (patch.config !== undefined) {
+    const game = await MGame.findById(req.params.id, { slug: 1 }).lean(true) as any;
+    if (!game) throw new Error('游戏不存在');
+    patch.config = normalizeGameParams(game.slug, patch.config ?? {});
+  }
   // 结构性字段（mode/variants/boards/numbers）现在由管理端权威：
   // seedGames() 已改为「已存在则完全不碰」，重启不会回写（SB-052）
   const structural = ['mode', 'variants', 'boards', 'numbers'].some(k => patch[k] !== undefined);
   await MGame.updateOne({ _id: req.params.id }, { $set: patch });
-  res.json({ code: 0, message: structural ? '已保存；结构化字段以后台为准，服务重启不会被种子回写' : '已保存' });
+  res.json({
+    code: 0,
+    message: patch.config !== undefined
+      ? '已保存；新参数从下一局开始生效，进行中的对局保持原参数'
+      : structural ? '已保存；结构化字段以后台为准，服务重启不会被种子回写' : '已保存',
+  });
 }));
 
 router.delete('/games/:id', wrap(async (req, res) => {
