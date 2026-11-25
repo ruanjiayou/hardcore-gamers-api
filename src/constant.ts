@@ -55,6 +55,12 @@ export enum MatchStatus {
   aborted = 'aborted',
   gameover = 'gameover',
 }
+/** 人机难度档：与 robot/src/engine/snake.ts 的 SNAKE_DIFFICULTIES 一一对应，默认 normal */
+export const ROBOT_DIFFICULTIES = ['easy', 'normal', 'hard', 'master'] as const;
+export type RobotDifficulty = (typeof ROBOT_DIFFICULTIES)[number];
+export const DEFAULT_ROBOT_DIFFICULTY: RobotDifficulty = 'normal';
+export const isRobotDifficulty = (v: unknown): v is RobotDifficulty =>
+  typeof v === 'string' && (ROBOT_DIFFICULTIES as readonly string[]).includes(v);
 const constant = {
   Events,
   GAME: {
@@ -76,6 +82,8 @@ const constant = {
   PLAYER: {
     STATE: PlayerState,
     TYPE: PlayerType,
+    DIFFICULTY: ROBOT_DIFFICULTIES,
+    DEFAULT_DIFFICULTY: DEFAULT_ROBOT_DIFFICULTY,
   },
   MEMBER: {
     TYPE: MemberType,

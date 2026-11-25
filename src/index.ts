@@ -27,6 +27,7 @@ import oauthController from './controller/oauth'
 import userController from './controller/user'
 import matchController from './controller/match'
 import voicePackController from './controller/voicePack'
+import assetsController from './controller/assets'
 import adminController from './controller/admin'
 import diagnosticsController from './controller/diagnostics'
 import { apiNotFound, errorHandler, getHttpStats, requestLogger } from './middleware/requestLogger'
@@ -111,6 +112,7 @@ const ROUTES: [prefix: string, router: any, name: string][] = [
   ['/api/users', userController, 'user'],
   ['/api/matches', matchController, 'match'],
   ['/api/voice-packs', voicePackController, 'voicePack'],
+  ['/api/assets', assetsController, 'assets'],
   ['/api/admin', adminController, 'admin'],
   ['/api/debug', diagnosticsController, 'debug'],
 ];
@@ -223,7 +225,8 @@ io.on('connection', async (socket: AuthSocket) => {
     if (!user_id) return;
 
     // 只有在没有其它设备在线时才清理映射，避免踢掉仍在线的新连接
-    if (usersMap.get(user_id) === socket.id) {
+    const isLatest = usersMap.get(user_id) === socket.id;
+    if (isLatest) {
       usersMap.delete(user_id);
     }
 
@@ -239,6 +242,27 @@ io.on('connection', async (socket: AuthSocket) => {
       });
     }
     io.emit('user:change', { user_id, field: 'atline', value: false, atline: false, timestamp: Date.now() });
+
+    /**
+     * 人机异常掉线的额外清理。
+     *
+     * 人机进程崩溃（最典型：服务端快照改增量协议后，线上 robot 跑的还是旧代码，
+     * 直读 `state.food` 抛 TypeError → 整个 robot 进程退出）时，它不会发
+     * `lobby:leave-room`，房间里会留下一条没人操控的僵尸蛇，账号也一直被占着。
+     *
+     * 只在「这条连接是该账号最新的一条」时清理：多端登录踢旧连接、
+     * 或 bot 重建实例时旧 socket 的断开事件晚到，都不该把新连接的成员清掉。
+     */
+    if (isLatest && socket.player_id && socket.room_id) {
+      try {
+        const player = await MPlayer.findById(socket.player_id, { type: 1 }).lean(true);
+        if (player?.type === constant.PLAYER.TYPE.robot) {
+          await roomService.handleRobotDisconnect(socket.room_id, socket.player_id);
+        }
+      } catch (error) {
+        console.error('❌ 人机掉线清理失败:', error);
+      }
+    }
   });
 });
 
@@ -315,16 +339,16 @@ server.listen(config.port, async () => {
   // 重启后回收中断的多人对局（否则房间会永远停在 playing）
   await snakeRuntimeService.resetStaleMatches();
 
-  // 给第一个官方无尽桌补 5 个人机（幂等：已有就只补差量）。
+  // 给所有官方无尽桌各补 2 个人机（幂等：已有就只补差量）。
   // robot 服务没起来时静默跳过，不能拖慢/阻塞服务启动。
   try {
-    const endlessRoom = await MRoom.findOne({
+    const endlessRooms = await MRoom.find({
       game_id: 'snake',
       'settings.variant': 'endless',
       status: { $ne: constant.ROOM.STATUS.deleted },
     }).sort({ createdAt: 1 }).lean(true);
-    if (endlessRoom) {
-      await ensureRoomBots(endlessRoom._id, SNAKE_ENDLESS_BOT_COUNT);
+    for (const room of endlessRooms) {
+      await ensureRoomBots(room._id, SNAKE_ENDLESS_BOT_COUNT);
     }
   } catch (error) {
     console.error('❌ 无尽桌补人机失败（服务继续启动）:', error);

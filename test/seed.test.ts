@@ -96,13 +96,16 @@ describe('种子数据一致性', () => {
       });
   });
 
-  test('机器人账号：每个游戏至少一个、player_id 唯一；贪吃蛇有 5 个人机', () => {
+  test('机器人账号：每个游戏至少一个、player_id 唯一；贪吃蛇人机够填满所有官方无尽桌', () => {
     const slugs = SEED_ROBOTS.map(r => r.slug);
     ['chess', 'gomoku', 'othello', 'snake', 'xiangqi'].forEach(slug => {
       expect(slugs.includes(slug)).toBe(true);
     });
-    // 贪吃蛇要多个人机填满官方无尽桌
-    expect(SEED_ROBOTS.filter(r => r.slug === 'snake').length).toBe(SNAKE_ENDLESS_BOT_COUNT);
+    // 贪吃蛇人机要够填满**所有**官方无尽桌（每桌 SNAKE_ENDLESS_BOT_COUNT 个）
+    const endlessRooms = officialRoomSeeds().filter(r => r.settings?.variant === 'endless');
+    const snakeBots = SEED_ROBOTS.filter(r => r.slug === 'snake').length;
+    expect(endlessRooms.length).toBeGreaterThan(0);
+    expect(snakeBots).toBeGreaterThanOrEqual(endlessRooms.length * SNAKE_ENDLESS_BOT_COUNT);
     const playerIds = SEED_ROBOTS.map(r => r.player_id);
     expect(new Set(playerIds).size).toBe(playerIds.length);
     const userIds = SEED_ROBOTS.map(r => r.user_id);

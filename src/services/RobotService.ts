@@ -72,6 +72,8 @@ export async function addRobotToRoom(room_id: string, options: { ignoreLimit?: b
         serverUrl: config.server_ws_url,
         ticket,
         room_id,
+        // 难度跟着人机账号走（后台可改），缺省 normal
+        difficulty: claimed.difficulty || constant.PLAYER.DEFAULT_DIFFICULTY,
       }),
     });
     const body = await resp.json().catch(() => null);

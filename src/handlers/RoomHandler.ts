@@ -510,9 +510,13 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       const winner_id = room.members.filter(m => m.member_type === constant.MEMBER.TYPE.player).map(m => m._id).find(_id => _id !== data.player_id)
       // 认输记一次"逃跑"：统计口径统一为 {matches, winners, draws, flees}
       await MPlayer.updateOne({ _id: player._id }, { $inc: { 'stats.flees': 1 } });
-      await roomService.gameover(data.room_id, data.match_id, winner_id as string)
+      // 对局 id 以服务端房间记录为准，不能用客户端上报的 match_id：
+      // 客户端可能拿着上一局的 id，结算会把房间拨回等待态、却把当前这局的
+      // 运行时留在内存里继续广播 → 下一局开起来变成两个运行时抢同一个频道（SB-053）
+      const liveMatchId = room.match_id || data.match_id;
+      await roomService.gameover(data.room_id, liveMatchId, winner_id as string)
       // 其他实时对局兜底：结算后停掉 tick，避免继续推进并二次结算
-      snakeRuntimeService.stop(data.match_id);
+      snakeRuntimeService.stop(liveMatchId);
       const winner = await MPlayer.findById(winner_id).lean(true)
       io.to(`room:${data.room_id}`).emit('room:game-over', pick(winner, ['_id', 'nickname']))
     } catch (error) {

@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import config from '../config';
-import type { IGame, IRoom, IMatch, IUser, IPlayer, IVoicePack } from '../types/index';
+import type { IAsset, IAssetPack, IGame, IRoom, IMatch, IPlayerAsset, IUser, IPlayer } from '../types/index';
 
 mongoose.set('strictQuery', true);
 mongoose.connect(config.mongo_url).catch(err => {
@@ -97,22 +97,65 @@ userSchema.virtual('hasVoicePackPermission').get(function (this: IUser) {
 
 export const MUser = mongoose.model<IUser>('users', userSchema);
 
-/** 语音包配置：音频文件 URL 由服务端下发，前端只按 URL 加载 */
-export const MVoicePack = mongoose.model<IVoicePack>('voice_packs', new mongoose.Schema({
+/**
+ * 资源包（原 `voice_packs`）：只存包的元信息，资源明细在 `assets`。
+ * 拆开是为了「一个包的多个字段都要能改/能传」——嵌套大对象改一项就整块覆盖。
+ */
+export const MAssetPack = mongoose.model<IAssetPack>('asset_packs', new mongoose.Schema({
   _id: String,
   name: String,
   desc: String,
   cover: String,
   isDefault: { type: Boolean, default: false },
   requirePermission: { type: Boolean, default: true },
-  bgm: [{ _id: false, url: String, label: String }],
-  sfx: mongoose.SchemaTypes.Mixed,
-  // 按游戏区分的音频：{ [gameId]: { bgm?: [...], sfx?: {...} } }
-  games: mongoose.SchemaTypes.Mixed,
   status: { type: Number, default: 1 },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
-}, { collection: 'voice_packs', versionKey: false }));
+}, { collection: 'asset_packs', versionKey: false }));
+
+/**
+ * 一条资源：包 × 游戏 × 分组 × key 唯一。
+ * `group` 用 string 而不是枚举，加一种资源（棋盘、头像框）不用改表。
+ */
+const assetSchema = new mongoose.Schema<IAsset>({
+  _id: String,
+  pack: { type: String, index: true },
+  game: { type: String, index: true, default: '' },
+  group: { type: String, index: true },
+  key: String,
+  label: String,
+  kind: { type: String, enum: ['audio', 'image'], default: 'image' },
+  url: String,
+  meta: mongoose.SchemaTypes.Mixed,
+  free: { type: Boolean, default: false },
+  status: { type: Number, default: 1 },
+  order: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now },
+}, { collection: 'assets', versionKey: false });
+// 同一包里同一游戏的同一分组 key 只能有一条，否则 manifest 取哪个图是随机的
+assetSchema.index({ pack: 1, game: 1, group: 1, key: 1 }, { unique: true });
+export const MAsset = mongoose.model<IAsset>('assets', assetSchema);
+
+/**
+ * 玩家持有的资源：不是所有资源都默认可用（收费皮肤、活动限定）。
+ * 判定：资源 `free` → 直接可用；否则看这张表有没有 (player_id, asset_id)。
+ */
+const playerAssetSchema = new mongoose.Schema<IPlayerAsset>({
+  player_id: { type: String, index: true },
+  asset_id: { type: String, index: true },
+  source: { type: String, default: 'grant' },
+  createdAt: { type: Date, default: Date.now },
+}, { collection: 'player_assets', versionKey: false });
+playerAssetSchema.index({ player_id: 1, asset_id: 1 }, { unique: true });
+export const MPlayerAsset = mongoose.model<IPlayerAsset>('player_assets', playerAssetSchema);
+
+/** 一次性初始化标记：种子只在首次部署灌一次，之后管理端说了算（重启不回写） */
+export const MMeta = mongoose.model('meta', new mongoose.Schema({
+  _id: String,
+  value: mongoose.SchemaTypes.Mixed,
+  updatedAt: { type: Date, default: Date.now },
+}, { collection: 'meta', versionKey: false }));
 
 export const MPlayer = mongoose.model<IPlayer & { room_id: string }>('players', new mongoose.Schema({
   _id: String,
@@ -132,6 +175,11 @@ export const MPlayer = mongoose.model<IPlayer & { room_id: string }>('players', 
   state: String,
   atline: Boolean,
   stats: mongoose.SchemaTypes.Mixed,
+  // 人机难度（easy/normal/hard/master，空 = 普通）：只对人机生效，开局时随 /add-robot 下发给 robot 服务
+  difficulty: String,
+  // 玩家装备的蛇皮肤（`assets._id`，group=snake）：玩家级属性，按游戏天然隔离；
+  // 对局快照与 match.players 都引用这个 id，图由 manifest 预加载
+  skin: String,
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 }, { collection: 'players', versionKey: false }))
@@ -142,5 +190,8 @@ export default {
   MRoom,
   MMatch,
   MPlayer,
-  MVoicePack,
+  MAsset,
+  MAssetPack,
+  MPlayerAsset,
+  MMeta,
 }

@@ -44,7 +44,9 @@ export class OAuthService {
       result.data.pass = crypto.createHash('md5').update(result.data.pass).digest('hex');
       await MUser.create({ ...result.data, _id, nickname: result.data.name });
       const user = await MUser.findById(_id).lean(true);
-      return { user: this.publicUser(user), token: this.getTokens(user) };
+      // 必须 await：getTokens 是 async，漏了 await 会被 JSON 序列化成 `token: {}`，
+      // 表现为「注册成功但没登录」（refresh 同理，会导致续期永远失败）
+      return { user: this.publicUser(user), token: await this.getTokens(user) };
     } else {
       console.log(result.error)
       throw new Error('参数错误')
@@ -66,7 +68,7 @@ export class OAuthService {
     if (data?.typ !== 'refresh' || !data?._id) throw new Error('refresh_token 无效');
     const user = await MUser.findById(data._id).lean(true);
     if (!user) throw new Error('用户不存在');
-    return { user: this.publicUser(user), token: this.getTokens(user) };
+    return { user: this.publicUser(user), token: await this.getTokens(user) };
   }
 
   async getTokens(user: IUser) {

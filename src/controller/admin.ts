@@ -8,14 +8,18 @@
  * 复用既有 service（roomService.destroyRoom、kickPlayer、reconcileRoom、addRobotToRoom），
  * 不重写业务规则——管理端只是这些能力的另一个入口。
  */
-import { Router } from 'express';
+import { Router, raw as rawBody } from 'express';
 import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import jwt from 'jsonwebtoken';
 import { v7 } from 'uuid';
 import config from '../config';
-import constant from '../constant';
-import { MGame, MMatch, MPlayer, MRoom, MUser } from '../models';
+import constant, { isRobotDifficulty } from '../constant';
+import { MAsset, MAssetPack, MGame, MMatch, MPlayer, MPlayerAsset, MRoom, MUser } from '../models';
 import { addRobotToRoom } from '../services/RobotService';
+import { invalidatePackCache } from '../services/VoicePackService';
+import { assetsService, kindOfGroup, listPacks, purgePack } from '../services/AssetsService';
 import { roomService } from '../services/RoomService';
 import GameLogics from '../games';
 
@@ -152,10 +156,11 @@ router.post('/games', wrap(async (req, res) => {
 router.put('/games/:id', wrap(async (req, res) => {
   const patch: any = { updatedAt: new Date() };
   for (const k of GAME_WRITABLE) if (req.body?.[k] !== undefined) patch[k] = req.body[k];
-  // 结构性字段（mode/variants/boards/numbers）在服务启动时会被 seed 校正覆盖，这里如实告知
+  // 结构性字段（mode/variants/boards/numbers）现在由管理端权威：
+  // seedGames() 已改为「已存在则完全不碰」，重启不会回写（SB-052）
   const structural = ['mode', 'variants', 'boards', 'numbers'].some(k => patch[k] !== undefined);
   await MGame.updateOne({ _id: req.params.id }, { $set: patch });
-  res.json({ code: 0, message: structural ? '已保存；结构化字段在服务重启时会被种子数据校正，需同步改 seed.data.ts' : '已保存' });
+  res.json({ code: 0, message: structural ? '已保存；结构化字段以后台为准，服务重启不会被种子回写' : '已保存' });
 }));
 
 router.delete('/games/:id', wrap(async (req, res) => {
@@ -182,9 +187,10 @@ router.get('/robots', wrap(async (req, res) => {
 }));
 
 router.post('/robots', wrap(async (req, res) => {
-  const { game_id, nickname, level } = req.body || {};
+  const { game_id, nickname, level, difficulty } = req.body || {};
   const game = await MGame.findById(String(game_id || '')).lean(true);
   if (!game) throw new Error('游戏不存在');
+  if (difficulty !== undefined && !isRobotDifficulty(difficulty)) throw new Error('难度只能是 easy/normal/hard/master');
   const suffix = v7().slice(0, 8);
   const player_id = `robot-player-${game.slug}-${suffix}`;
   const user_id = `robot-user-${game.slug}-${suffix}`;
@@ -204,6 +210,7 @@ router.post('/robots', wrap(async (req, res) => {
     type: PLAYER.TYPE.robot,
     state: PLAYER.STATE.online,
     level: Number(level) || 1,
+    difficulty: isRobotDifficulty(difficulty) ? difficulty : PLAYER.DEFAULT_DIFFICULTY,
     score: 0,
     createdAt: new Date(),
   });
@@ -215,6 +222,10 @@ router.put('/robots/:id', wrap(async (req, res) => {
   if (req.body?.nickname !== undefined) patch.nickname = String(req.body.nickname);
   if (req.body?.level !== undefined) patch.level = Number(req.body.level) || 1;
   if (req.body?.state !== undefined) patch.state = String(req.body.state);
+  if (req.body?.difficulty !== undefined) {
+    if (!isRobotDifficulty(req.body.difficulty)) throw new Error('难度只能是 easy/normal/hard/master');
+    patch.difficulty = req.body.difficulty;
+  }
   await MPlayer.updateOne({ _id: req.params.id, type: PLAYER.TYPE.robot }, { $set: patch });
   res.json({ code: 0 });
 }));
@@ -238,7 +249,226 @@ router.delete('/robots/:id', wrap(async (req, res) => {
   res.json({ code: 0, message: '已删除' });
 }));
 
+// ========== 资源：包 / 资源明细 / 上传 / 玩家授权 ==========
+//
+// 数据模型：`asset_packs`（包）+ `assets`（一行一条资源）+ `player_assets`（授权）。
+// 后台不再「编辑一个包的嵌套对象」——那样改一个字段就得整块覆盖，也没法单独上下架/授权。
+
+const SLUG_RE = /^[a-z0-9_-]{1,32}$/;
+/** 上传白名单：只认这些扩展名，其余一律拒绝（不信任客户端 MIME） */
+const UPLOAD_EXT = new Set(['svg', 'png', 'webp', 'jpg', 'jpeg', 'gif', 'mp3', 'ogg', 'wav', 'm4a']);
+
+function assertSlug(value: unknown, field: string): string {
+  const s = String(value ?? '');
+  if (!SLUG_RE.test(s)) throw new Error(`${field} 只能是小写字母/数字/下划线/中划线`);
+  return s;
+}
+
+/** 资源地址：允许站内相对路径或 http(s) */
+function assertUrl(value: unknown): string {
+  const url = String(value ?? '').trim();
+  if (!url) throw new Error('资源地址不能为空');
+  if (!/^\/[^\s]*$/.test(url) && !/^https?:\/\//i.test(url)) {
+    throw new Error('资源地址必须是 / 开头的站内路径或 http(s) 链接');
+  }
+  return url;
+}
+
+/** 包列表 */
+router.get('/packs', wrap(async (_req, res) => {
+  res.json({ code: 0, data: await listPacks() });
+}));
+
+/** 新建包；`_id` 可指定（用于 /skins/<pack>/... 目录名），不指定则自动生成 */
+router.post('/packs', wrap(async (req, res) => {
+  const { id, name, desc, cover, isDefault, requirePermission } = req.body || {};
+  if (!name || !String(name).trim()) throw new Error('包名不能为空');
+  const _id = id ? assertSlug(id, '包 id') : v7().slice(0, 8);
+  if (await MAssetPack.findById(_id).lean(true)) throw new Error(`包 id「${_id}」已存在`);
+  const now = new Date();
+  const makeDefault = isDefault === true;
+  if (makeDefault) await MAssetPack.updateMany({}, { $set: { isDefault: false } });
+  await MAssetPack.create({
+    _id,
+    name: String(name).trim(),
+    desc: String(desc || ''),
+    cover: String(cover || ''),
+    isDefault: makeDefault,
+    requirePermission: requirePermission !== false,
+    status: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await invalidatePackCache();
+  res.json({ code: 0, data: { _id }, message: '已创建' });
+}));
+
+/** 改包元信息（不含资源明细） */
+router.put('/packs/:id', wrap(async (req, res) => {
+  const pack = await MAssetPack.findById(req.params.id).lean(true);
+  if (!pack) throw new Error('资源包不存在');
+  const patch: Record<string, any> = { updatedAt: new Date() };
+  const body = req.body || {};
+  if (body.name !== undefined) patch.name = String(body.name).trim();
+  if (body.desc !== undefined) patch.desc = String(body.desc);
+  if (body.cover !== undefined) patch.cover = String(body.cover);
+  if (body.requirePermission !== undefined) patch.requirePermission = body.requirePermission !== false;
+  if (body.status !== undefined) patch.status = Number(body.status) ? 1 : 0;
+  if (body.isDefault === true) {
+    // 默认包是唯一回退目标，只能有一个
+    await MAssetPack.updateMany({ _id: { $ne: req.params.id } }, { $set: { isDefault: false } });
+    patch.isDefault = true;
+  } else if (body.isDefault === false) {
+    if (pack.isDefault) throw new Error('至少要保留一个默认包');
+    patch.isDefault = false;
+  }
+  await MAssetPack.updateOne({ _id: req.params.id }, { $set: patch });
+  await invalidatePackCache();
+  res.json({ code: 0, message: '已保存' });
+}));
+
+/** 删包：连带清资源与授权（默认包禁止删除） */
+router.delete('/packs/:id', wrap(async (req, res) => {
+  const pack = await MAssetPack.findById(req.params.id).lean(true) as any;
+  if (!pack) throw new Error('资源包不存在');
+  if (pack.isDefault) throw new Error('默认包不能删除，先把别的包设为默认');
+  await purgePack(req.params.id);
+  await invalidatePackCache();
+  res.json({ code: 0, message: '已删除（含包内资源与授权）' });
+}));
+
+/** 资源明细列表：按包/游戏/分组过滤，不传就全量 */
+router.get('/assets', wrap(async (req, res) => {
+  const query: Record<string, any> = {};
+  if (req.query.pack) query.pack = String(req.query.pack);
+  if (req.query.game !== undefined) query.game = String(req.query.game);
+  if (req.query.group) query.group = String(req.query.group);
+  const rows = await MAsset.find(query).sort({ pack: 1, game: 1, group: 1, order: 1, key: 1 }).lean(true);
+  res.json({ code: 0, data: rows });
+}));
+
+/** 校验并规范化一条资源（新建与修改共用） */
+function normalizeAsset(body: any, existing?: any) {
+  const pack = body.pack !== undefined ? assertSlug(body.pack, 'pack') : existing?.pack;
+  if (!pack) throw new Error('缺少 pack');
+  const game = body.game !== undefined ? String(body.game).trim() : (existing?.game || '');
+  if (game && !SLUG_RE.test(game)) throw new Error('game 不合法');
+  const group = body.group !== undefined ? assertSlug(body.group, 'group') : existing?.group;
+  if (!group) throw new Error('缺少 group');
+  const key = body.key !== undefined ? assertSlug(body.key, 'key') : existing?.key;
+  if (!key) throw new Error('缺少 key');
+  const kind = body.kind !== undefined ? String(body.kind) : (existing?.kind || kindOfGroup(group));
+  if (kind !== 'audio' && kind !== 'image') throw new Error('kind 只能是 audio 或 image');
+  const url = body.url !== undefined ? assertUrl(body.url) : existing?.url;
+  if (!url) throw new Error('缺少 url');
+  return {
+    pack,
+    game,
+    group,
+    key,
+    label: body.label !== undefined ? String(body.label) : (existing?.label || key),
+    kind,
+    url,
+    meta: body.meta !== undefined ? body.meta : (existing?.meta || {}),
+    free: body.free !== undefined ? body.free === true : (existing?.free === true),
+    status: body.status !== undefined ? (Number(body.status) ? 1 : 0) : (existing?.status ?? 1),
+    order: body.order !== undefined ? Number(body.order) || 0 : (existing?.order ?? 0),
+  };
+}
+
+/** 同一个包×游戏×分组下 key 不能重复，否则 manifest 取哪个是随机的 */
+async function assertAssetUnique(row: { pack: string; game: string; group: string; key: string }, selfId?: string) {
+  const dup = await MAsset.findOne({
+    pack: row.pack, game: row.game, group: row.group, key: row.key,
+    ...(selfId ? { _id: { $ne: selfId } } : {}),
+  }, { _id: 1 }).lean(true);
+  if (dup) throw new Error(`「${row.group}.${row.key}」在该包该游戏下已存在`);
+}
+
+router.post('/assets', wrap(async (req, res) => {
+  const row = normalizeAsset(req.body || {});
+  if (!await MAssetPack.findById(row.pack).lean(true)) throw new Error('资源包不存在');
+  await assertAssetUnique(row);
+  const now = new Date();
+  const _id = v7();
+  await MAsset.create({ _id, ...row, createdAt: now, updatedAt: now });
+  await invalidatePackCache();
+  res.json({ code: 0, data: { _id }, message: '已新增' });
+}));
+
+router.put('/assets/:id', wrap(async (req, res) => {
+  const existing = await MAsset.findById(req.params.id).lean(true) as any;
+  if (!existing) throw new Error('资源不存在');
+  const row = normalizeAsset(req.body || {}, existing);
+  await assertAssetUnique(row, req.params.id);
+  await MAsset.updateOne({ _id: req.params.id }, { $set: { ...row, updatedAt: new Date() } });
+  await invalidatePackCache();
+  res.json({ code: 0, message: '已保存' });
+}));
+
+router.delete('/assets/:id', wrap(async (req, res) => {
+  const existing = await MAsset.findById(req.params.id).lean(true) as any;
+  if (!existing) throw new Error('资源不存在');
+  await MPlayerAsset.deleteMany({ asset_id: req.params.id });
+  await MAsset.deleteOne({ _id: req.params.id });
+  await invalidatePackCache();
+  res.json({ code: 0, message: '已删除' });
+}));
+
+/**
+ * 上传资源文件：请求体是**原始二进制**（不是 multipart），文件名走 query。
+ *
+ * 用 raw body 而不是 multer：少一个依赖，前端 `fetch(url, { body: file })` 直接传 File 即可。
+ * 落盘路径 `public/uploads/<game>/<group>/<随机>.<ext>`，静态目录已托管 → 立刻可访问。
+ */
+router.post('/assets/upload', rawBody({ type: () => true, limit: '24mb' }), wrap(async (req, res) => {
+  const buf = req.body as Buffer;
+  if (!Buffer.isBuffer(buf) || !buf.length) throw new Error('没有收到文件内容');
+  const name = String(req.query.name || '');
+  const ext = (name.includes('.') ? name.split('.').pop()! : '').toLowerCase();
+  if (!UPLOAD_EXT.has(ext)) throw new Error(`不支持的文件类型：${ext || '未知'}（允许 ${[...UPLOAD_EXT].join('/')}）`);
+  const game = req.query.game ? assertSlug(req.query.game, 'game') : 'common';
+  const group = req.query.group ? assertSlug(req.query.group, 'group') : 'misc';
+  const dir = path.join('public', 'uploads', game, group);
+  await fs.mkdir(dir, { recursive: true });
+  // 不用原始文件名：客户端可能带路径/中文/超长名，只保留扩展名
+  const file = `${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
+  await fs.writeFile(path.join(dir, file), buf);
+  const url = `/uploads/${game}/${group}/${file}`;
+  res.json({ code: 0, data: { url, size: buf.length, name: file }, message: '已上传' });
+}));
+
+/** 玩家搜索：授权前得先找到人 */
+router.get('/players', wrap(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const game = req.query.game ? String(req.query.game) : '';
+  const query: Record<string, any> = { type: PLAYER.TYPE.player };
+  if (game) query.game_id = game;
+  if (q) query.$or = [{ nickname: new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }, { _id: q }];
+  const rows = await MPlayer.find(query, { nickname: 1, game_id: 1, user_id: 1, skin: 1 }).limit(50).lean(true);
+  res.json({ code: 0, data: rows });
+}));
+
+/** 某玩家额外获得的资源 */
+router.get('/players/:pid/assets', wrap(async (req, res) => {
+  res.json({ code: 0, data: await assetsService.listPlayerAssets(req.params.pid) });
+}));
+
+router.post('/players/:pid/assets', wrap(async (req, res) => {
+  const assetId = String(req.body?.asset_id || '');
+  if (!assetId) throw new Error('缺少 asset_id');
+  if (!await MPlayer.findById(req.params.pid, { _id: 1 }).lean(true)) throw new Error('玩家不存在');
+  await assetsService.grantAsset(req.params.pid, assetId, 'grant');
+  res.json({ code: 0, message: '已授予' });
+}));
+
+router.delete('/players/:pid/assets/:assetId', wrap(async (req, res) => {
+  await assetsService.revokeAsset(req.params.pid, req.params.assetId);
+  res.json({ code: 0, message: '已撤销' });
+}));
+
 // ========== 房间 + 房内人机 ==========
+
 
 router.get('/rooms', wrap(async (req, res) => {
   const query: any = { status: { $ne: ROOM.STATUS.deleted } };

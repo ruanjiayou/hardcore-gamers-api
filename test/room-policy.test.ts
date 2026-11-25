@@ -11,6 +11,7 @@ import {
   pickTempOwner,
   resolveLeaveAction,
   shouldTakeOwnership,
+  shouldCleanupRobotOnDisconnect,
 } from '../src/utils/roomPolicy';
 
 const human = (id: string, member_type = 'player') => ({ _id: id, member_type, player_type: 'player' });
@@ -347,5 +348,36 @@ describe('离开房间流转', () => {
       expect(d.transferOwnerTo).toBe('p2');
       expect(d.reset).toBe(false);
     }
+  });
+});
+
+/**
+ * 人机异常掉线的清理判定。
+ *
+ * 事故背景：服务端快照改成增量协议后，线上 robot 跑的还是旧代码
+ * （直读 `state.food`，增量帧下是 undefined）→ 监听器抛 TypeError →
+ * 整个 robot 进程退出 → 人机来不及发 `lobby:leave-room`，
+ * 房间里留下一条没人操控的僵尸蛇，账号也一直被占着。
+ */
+describe('人机异常掉线清理', () => {
+  test('人机掉线要清理（摘掉僵尸蛇 + 释放账号占位）', () => {
+    const room = { members: [human('p1'), robot('r1')] };
+    expect(shouldCleanupRobotOnDisconnect(room, 'r1')).toBe(true);
+  });
+
+  test('真人掉线不清理：位置留着，回来还能接着玩', () => {
+    const room = { members: [human('p1'), robot('r1')] };
+    expect(shouldCleanupRobotOnDisconnect(room, 'p1')).toBe(false);
+  });
+
+  test('不是房间成员就没什么可清的', () => {
+    const room = { members: [human('p1')] };
+    expect(shouldCleanupRobotOnDisconnect(room, 'r-not-in-room')).toBe(false);
+  });
+
+  test('房间不存在 / 没有成员表时安全返回 false', () => {
+    expect(shouldCleanupRobotOnDisconnect(null, 'r1')).toBe(false);
+    expect(shouldCleanupRobotOnDisconnect(undefined, 'r1')).toBe(false);
+    expect(shouldCleanupRobotOnDisconnect({ members: [] }, 'r1')).toBe(false);
   });
 });

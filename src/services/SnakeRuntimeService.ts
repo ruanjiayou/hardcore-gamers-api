@@ -16,12 +16,12 @@ import type { Server } from 'socket.io';
 import { MMatch, MPlayer, MRoom } from '../models';
 import constant from '../constant';
 import {
-  SNAKE_BOOST_CD_MS,
+  SNAKE_BOOST_MIN_LEN,
   SNAKE_RADIUS,
   SNAKE_TICK_MS,
   addSnake as addSnakeToState,
-  boostSnake as boostState,
   createSnakeState,
+  setBoost as setBoostState,
   isSnakeVariant,
   respawnSnake as respawnSnakeState,
   snakeScores,
@@ -57,6 +57,15 @@ interface Runtime {
   lastTickAt: number;
   /** player_id -> 昵称：局中加人时 curr_state.players 不会更新，名字单独记在这里 */
   names: Map<string, string>;
+  /** player_id -> 蛇皮肤 asset_id（玩家级选择，局中不查库，开局/加入时取一次） */
+  skins: Map<string, string>;
+  /**
+   * 上一帧已下发的拾取物坐标表（id → 坐标）。
+   * 用来算 foodAdd / foodDel（按 id）以及 foodMove（按坐标变化 —— 磁铁吸附会改坐标）。
+   */
+  foodPos: Map<number, { x: number; y: number }>;
+  /** 置 1 表示下一帧必须发全量（开局/中途加入/周期对齐） */
+  needFull: number;
 }
 
 /** 网络快照：连续像素坐标 + 等距身体采样，客户端据此插值/预测 */
@@ -68,10 +77,21 @@ export interface SnakeSnapshot {
   radius: number;
   tick: number;
   variant: SnakeVariant;
-  /** 座位表（id + 昵称 + 队伍），客户端据此显示玩家名与头顶标签 */
-  players: { id: string; nickname: string; team: string }[];
-  /** 场上可拾取物：普通食物（分档）/ 尸体残骸 / 磁铁 / 闪电 */
-  food: SnakeFoodItem[];
+  /** 座位表（id + 昵称 + 队伍 + 蛇皮肤），客户端据此显示玩家名与头顶标签 */
+  players: { id: string; nickname: string; team: string; skin: string }[];
+  /**
+   * 拾取物全量（仅 `foodFull=true` 时下发）。
+   * 平时用 `foodAdd` / `foodDel` 增量同步：100+ 个食物每 50ms 全量推一遍太浪费。
+   */
+  food?: SnakeFoodItem[];
+  /** 本帧新增的拾取物（带稳定 id） */
+  foodAdd?: SnakeFoodItem[];
+  /** 本帧消失的拾取物 id */
+  foodDel?: number[];
+  /** 本帧坐标发生变化的拾取物（磁铁吸附会把食物往蛇头拉） */
+  foodMove?: { id: number; x: number; y: number }[];
+  /** 本帧的 `food` 是否为全量（开局首帧、中途加入、每 10s 对齐一次） */
+  foodFull?: boolean;
   snakes: {
     id: string;
     /** 所属队伍（团队模式）；空串表示无队伍 */
@@ -88,16 +108,16 @@ export interface SnakeSnapshot {
     alive: boolean;
     score: number;
     best: number;
-    /** 剩余无敌时间（ms），0 表示没有 */
+    /** 剩余无敌时间（ms），0 表示没有（重生盾 + 星星共用） */
     invincible: number;
-    /** 剩余加速时间（ms） */
-    boosting: number;
-    /** 加速冷却剩余（ms） */
-    boostCd: number;
+    /** 这一 tick 是否真的在加速（按住 + 身长够） */
+    boosting: boolean;
+    /** 加速键是否按住（客户端据此同步按钮状态） */
+    boostHeld: boolean;
     /** 磁铁效果剩余时间（ms），0 表示没有 */
     magnet: number;
-    /** 闪电加速剩余时间（ms），0 表示没有 */
-    lightning: number;
+    /** 星星无敌剩余时间（ms），0 表示没有 */
+    star: number;
     /** 距离重生还有多久（ms）；改为玩家手动重生后恒为 0，仅保留字段兼容旧客户端 */
     respawnIn: number;
     /** 已出局、正在等玩家选择「重生 / 退出」（无尽模式） */
@@ -109,6 +129,93 @@ export interface SnakeSnapshot {
   winner: string;
   /** 团队模式下各队总积分：team -> 分数 */
   teamScores: Record<string, number>;
+  /** 团队模式还剩多少毫秒结束；0 = 不限时（无尽） */
+  endsIn: number;
+}
+
+/** 拾取物的网络形态：只带渲染与判定需要的字段 */
+function toFoodDTO(f: SnakeFoodItem) {
+  return { id: f.id, x: f.x, y: f.y, r: f.r, v: f.v, k: f.k };
+}
+
+/** 判断运行时归属所需的最小信息 */
+export interface RuntimeOwner {
+  match_id: string;
+  room_id: string;
+}
+
+/**
+ * 同一房间只允许存在一个贪吃蛇运行时（纯函数，便于单测）。
+ *
+ * 背景：运行时是按 match_id 存内存的，而房间会换对局（match）。
+ * 如果旧对局的运行时没被停掉，新对局又开了运行时，两个运行时就会同时往
+ * 同一个 socket 频道 `room:<room_id>` 广播快照 —— 客户端一半的帧里找不到自己的蛇，
+ * 于是「已出局」提示每 50ms 闪一次（SB-053）。
+ *
+ * 返回值：要停掉的旧运行时 match_id；null = 没有冲突。
+ */
+export function pickStaleRuntime(
+  list: RuntimeOwner[],
+  room_id: string,
+  new_match_id: string,
+): string | null {
+  for (const rt of list) {
+    if (rt.room_id !== room_id) continue;
+    if (rt.match_id === new_match_id) continue;
+    return rt.match_id;
+  }
+  return null;
+}
+
+/** 拾取物载荷：全量或增量 */
+export interface SnakeFoodPayload {
+  /** 全量表（仅 `foodFull=true` 时下发） */
+  food?: SnakeFoodItem[];
+  /** 增量：新增的拾取物 */
+  foodAdd?: SnakeFoodItem[];
+  /** 增量：消失的拾取物 id */
+  foodDel?: number[];
+  /**
+   * 增量：坐标发生变化的拾取物（id + 新坐标）。
+   *
+   * 磁铁吸附会直接改食物的 x/y，而增删协议只带 id —— 客户端看到的食物纹丝不动，
+   * 「吸的效果就没了」。这里补一个位移通道，客户端按 id 更新坐标。
+   */
+  foodMove?: { id: number; x: number; y: number }[];
+  foodFull: boolean;
+}
+
+/**
+ * 计算本帧的拾取物载荷（纯函数，便于单测）。
+ *
+ * - 全量：整表下发，客户端整表替换（开局首帧 / 中途加入 / 每 200 tick 对齐）。
+ * - 增量：只发「上一帧没有的」「这一帧没了的」「坐标变了的」，客户端按 id 增删改。
+ *
+ * 关键点：**id 必须稳定**。客户端不按坐标猜拾取物，增删全靠 id，
+ * 所以 id 复用（同一位置重新生成）时会出现「旧 id 还在 → 客户端不重画」。
+ *
+ * @param prev 上一帧的拾取物坐标表（id → 坐标），用来算增删与位移
+ */
+export function computeFoodPayload(
+  prev: ReadonlyMap<number, { x: number; y: number }>,
+  food: SnakeFoodItem[],
+  full: boolean,
+): SnakeFoodPayload {
+  if (full) return { food: food.map(toFoodDTO), foodFull: true };
+  const currentIds = new Set(food.map(f => f.id));
+  const foodMove: { id: number; x: number; y: number }[] = [];
+  for (const f of food) {
+    const p = prev.get(f.id);
+    // 上一帧没有的（新增）不在这里报位移 —— 它由 foodAdd 带着坐标下发
+    if (!p) continue;
+    if (p.x !== f.x || p.y !== f.y) foodMove.push({ id: f.id, x: f.x, y: f.y });
+  }
+  return {
+    foodAdd: food.filter(f => !prev.has(f.id)).map(toFoodDTO),
+    foodDel: [...prev.keys()].filter(id => !currentIds.has(id)),
+    foodMove,
+    foodFull: false,
+  };
 }
 
 export class SnakeRuntimeService {
@@ -152,6 +259,21 @@ export class SnakeRuntimeService {
     if (!this.io) return;
     if (this.runtimes.has(match._id)) return;
 
+    // 一个房间只允许一个运行时：新对局开起来之前，先把同房间的旧运行时停掉。
+    // 否则两个运行时会同时往同一个 socket 频道广播快照，客户端看到的是
+    // 「两个不同对局的画面交替刷新」（自己那条蛇时有时无 → 已出局提示狂闪）。
+    const stale = pickStaleRuntime([...this.runtimes.values()], match.room_id, match._id);
+    if (stale) {
+      this.stop(stale);
+      // 旧对局在库里仍是 playing 的话一并收尾：留着会被 reconcileRoom /
+      // cleanupZombieMatches 当成"进行中的对局"，房间的 match_id 会被拉回旧对局。
+      void MMatch.updateOne(
+        { _id: stale, status: constant.MATCH.STATUS.playing },
+        { $set: { status: constant.MATCH.STATUS.gameover, updatedAt: new Date() } },
+      ).catch((error: any) => console.log('❌ 清理同房间旧对局失败:', error));
+      console.log(`🐍 房间 ${match.room_id} 已有旧运行时 ${stale}，已停掉（同一房间只留一个运行时）`);
+    }
+
     const rawVariant = match.curr_state?.variant;
     const variant: SnakeVariant = isSnakeVariant(rawVariant) ? rawVariant : 'team';
     const players = (match.curr_state?.players || [])
@@ -168,8 +290,11 @@ export class SnakeRuntimeService {
 
     const state = createSnakeState(ids, { variant, teams, random: Math.random });
     const names = new Map<string, string>();
+    const skins = new Map<string, string>();
     for (const p of match.curr_state?.players || []) {
-      if (p?._id) names.set(String(p._id), p.nickname || '玩家');
+      if (!p?._id) continue;
+      names.set(String(p._id), p.nickname || '玩家');
+      if (p.skin) skins.set(String(p._id), String(p.skin));
     }
     const rt: Runtime = {
       match_id: match._id,
@@ -180,6 +305,9 @@ export class SnakeRuntimeService {
       timer: null,
       lastTickAt: Date.now(),
       names,
+      skins,
+      foodPos: new Map(),
+      needFull: 1,
     };
     this.runtimes.set(match._id, rt);
     this.broadcast(rt);
@@ -196,10 +324,12 @@ export class SnakeRuntimeService {
     const ids = rt.state.snakes.map(s => s.id).filter(Boolean);
     if (!ids.length) return;
     try {
-      const players = await MPlayer.find({ _id: { $in: ids } }, { nickname: 1 }).lean(true);
+      const players = await MPlayer.find({ _id: { $in: ids } }, { nickname: 1, skin: 1 }).lean(true);
       for (const p of players) {
         const name = (p as any)?.nickname;
         if (name) rt.names.set(String((p as any)._id), name);
+        const skin = (p as any)?.skin;
+        if (skin) rt.skins.set(String((p as any)._id), String(skin));
       }
     } catch (error) {
       console.log('❌ 贪吃蛇昵称回填失败:', error);
@@ -226,11 +356,11 @@ export class SnakeRuntimeService {
     return rt.state.snakes.some(s => s.id === player_id);
   }
 
-  /** 加速（有冷却，服务端权威） */
-  boost(match_id: string, player_id: string): boolean {
+  /** 加速键按住状态（无 CD，代价是扣身长；服务端权威） */
+  setBoost(match_id: string, player_id: string, held: boolean): boolean {
     const rt = this.runtimes.get(match_id);
     if (!rt) return false;
-    const ok = boostState(rt.state, player_id);
+    const ok = setBoostState(rt.state, player_id, held);
     if (ok) this.broadcast(rt);
     return ok;
   }
@@ -256,13 +386,16 @@ export class SnakeRuntimeService {
    * ② 结算时 scores 表与玩家列表会对不上；
    * ③ 服务端重启后按库重建运行时（spawn 只认 curr_state.players）会把他整个丢掉。
    */
-  async addPlayer(match_id: string, player_id: string, nickname?: string): Promise<boolean> {
+  async addPlayer(match_id: string, player_id: string, nickname?: string, skin?: string): Promise<boolean> {
     const rt = this.runtimes.get(match_id);
     if (!rt) return false;
     if (nickname) rt.names.set(player_id, nickname);
+    if (skin) rt.skins.set(player_id, skin);
     if (rt.state.snakes.some(s => s.id === player_id)) return true;
     const snake = addSnakeToState(rt.state, player_id, Math.random);
     snake.invincibleUntil = Date.now() + 3000;
+    // 新玩家手上没有拾取物表，发一帧全量让所有人对齐（100 个食物几 KB，加入很低频）
+    rt.needFull = 1;
     await this.syncMatchMembers(rt, player_id, nickname);
     this.broadcast(rt);
     return true;
@@ -283,6 +416,9 @@ export class SnakeRuntimeService {
         player_type: member?.player_type || constant.PLAYER.TYPE.player,
         member_type: member?.member_type || constant.MEMBER.TYPE.player,
         ...(nickname ? { nickname } : {}),
+        // 皮肤只记 asset_id：重启按 curr_state.players 重建运行时时直接可用，
+        // 不用再去 player 表查一次（图由 manifest 预加载，快照里永远没有 URL）
+        ...(rt.skins.get(player_id) ? { skin: rt.skins.get(player_id) } : {}),
       };
       // 内存基线：persist 会带上 players，服务端重启后 spawn 依赖它重建运行时
       const basePlayers: any[] = Array.isArray(rt.base?.players) ? rt.base.players : [];
@@ -341,7 +477,7 @@ export class SnakeRuntimeService {
   /** 实时快照（断线重进时给前端补齐到最新局面） */
   snapshot(match_id: string): SnakeSnapshot | null {
     const rt = this.runtimes.get(match_id);
-    return rt ? this.toSnapshot(rt) : null;
+    return rt ? this.toSnapshot(rt, { full: true }) : null;
   }
 
   /**
@@ -428,6 +564,34 @@ export class SnakeRuntimeService {
     this.runtimes.delete(match_id);
   }
 
+  /**
+   * 该房间是否还有活跃运行时。
+   * 房间换对局前必须查一下：旧运行时没停干净就会和新运行时抢同一个广播频道。
+   */
+  hasByRoom(room_id: string): boolean {
+    for (const rt of this.runtimes.values()) {
+      if (rt.room_id === room_id) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 停掉某个房间的全部运行时（静默，不结算）。
+   *
+   * 房间被拨回等待态 / 对局被判结束时必须调用：否则运行时变成僵尸，
+   * 还在 tick、还在往 `room:<id>` 广播快照，下一局开起来就变成两个运行时抢频道。
+   */
+  stopByRoom(room_id: string): number {
+    let stopped = 0;
+    for (const rt of [...this.runtimes.values()]) {
+      if (rt.room_id !== room_id) continue;
+      if (rt.timer) clearTimeout(rt.timer);
+      this.runtimes.delete(rt.match_id);
+      stopped++;
+    }
+    return stopped;
+  }
+
   has(match_id: string): boolean {
     return this.runtimes.has(match_id);
   }
@@ -477,6 +641,8 @@ export class SnakeRuntimeService {
   }
 
   private broadcast(rt: Runtime) {
+    // 每 200 tick（约 10s）对齐一次全量：偶发丢包/客户端增删错位也能自愈
+    if (rt.state.tick % 200 === 0) rt.needFull = 1;
     this.io?.to(`room:${rt.room_id}`).emit('room:player-action', { snake: this.toSnapshot(rt) });
   }
 
@@ -484,16 +650,27 @@ export class SnakeRuntimeService {
     try {
       await MMatch.updateOne(
         { _id: rt.match_id },
-        { $set: { curr_state: { ...rt.base, snake: this.toSnapshot(rt) }, updatedAt: new Date() } },
+        { $set: { curr_state: { ...rt.base, snake: this.toSnapshot(rt, { full: true }) }, updatedAt: new Date() } },
       );
     } catch (error) {
       console.log('❌ 贪吃蛇局面落库失败:', error);
     }
   }
 
-  private toSnapshot(rt: Runtime): SnakeSnapshot {
+  /**
+   * 生成快照。
+   * @param opts.full 强制全量（落库、手动取快照用）；否则按 `rt.needFull` 决定，
+   *   平时只带 `foodAdd`/`foodDel`，把每帧体积从「100 个食物」压到「变化的那几个」。
+   */
+  private toSnapshot(rt: Runtime, opts: { full?: boolean } = {}): SnakeSnapshot {
     const state = rt.state;
     const now = Date.now();
+    const food = state.food;
+    const full = opts.full === true || rt.needFull > 0;
+    const foodPayload = computeFoodPayload(rt.foodPos, food, full);
+    // 记下本帧坐标，供下一帧算增删与位移
+    rt.foodPos = new Map(food.map(f => [f.id, { x: f.x, y: f.y }]));
+    rt.needFull = 0;
     return {
       w: state.w,
       h: state.h,
@@ -504,8 +681,10 @@ export class SnakeRuntimeService {
         id: s.id,
         nickname: rt.names.get(s.id) || '玩家',
         team: s.team || '',
+        skin: rt.skins.get(s.id) || '',
       })),
-      food: state.food.map(f => ({ x: f.x, y: f.y, r: f.r, v: f.v, k: f.k })),
+      // id 必须下发：客户端按 id 增删拾取物（不按坐标猜），增量同步全靠它
+      ...foodPayload,
       snakes: state.snakes.map(s => ({
         id: s.id,
         team: s.team || '',
@@ -518,10 +697,10 @@ export class SnakeRuntimeService {
         score: s.score,
         best: Math.max(s.score || 0, s.best || 0),
         invincible: Math.max(0, (s.invincibleUntil || 0) - now),
-        boosting: Math.max(0, (s.boostUntil || 0) - now),
-        boostCd: Math.max(0, (s.boostReadyAt || 0) - now),
+        boosting: s.boostHeld === true && s.length > SNAKE_BOOST_MIN_LEN && s.alive,
+        boostHeld: s.boostHeld === true,
         magnet: Math.max(0, (s.magnetUntil || 0) - now),
-        lightning: Math.max(0, (s.lightningUntil || 0) - now),
+        star: Math.max(0, (s.starUntil || 0) - now),
         respawnIn: 0,
         awaiting: !s.alive && (state.variant || 'team') === 'endless',
         respawns: s.respawns || 0,
@@ -529,9 +708,9 @@ export class SnakeRuntimeService {
       status: state.status,
       winner: state.winner,
       teamScores: state.teamScores || {},
+      endsIn: Math.max(0, (state.endsAt || 0) - now),
     };
   }
 }
 
-export { SNAKE_BOOST_CD_MS };
 export const snakeRuntimeService = new SnakeRuntimeService();

@@ -98,6 +98,10 @@ async function loadConfig() {
     // etcd 不可用时保持默认值，避免整个服务启动失败
     log.error(`读取 etcd ${env}/${CONFIG_KEY} 失败：`, err);
   }
+  // 测试专用：允许把 mongo/redis 指向隔离库做 E2E，避免污染线上库。
+  // 只认显式的 MONGO_URL_OVERRIDE / REDIS_URL_OVERRIDE，不在生产默认路径上生效。
+  if (process.env.MONGO_URL_OVERRIDE) config.mongo_url = process.env.MONGO_URL_OVERRIDE;
+  if (process.env.REDIS_URL_OVERRIDE) config.redis_url = process.env.REDIS_URL_OVERRIDE;
 }
 
 // 顶层 await：任何 import config 的模块都会等配置加载完成再执行，

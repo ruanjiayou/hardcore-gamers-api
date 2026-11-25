@@ -9,13 +9,13 @@
  */
 
 import mongoose from 'mongoose';
-import { MGame, MPlayer, MRoom, MUser, MVoicePack } from './models';
+import { MAsset, MAssetPack, MGame, MMeta, MPlayer, MRoom, MUser } from './models';
 import config from './config';
 import redis from './utils/redis';
-import { SEED_GAMES, SEED_ROBOTS, SEED_VOICE_PACKS, robotPlayerSeed, officialRoomSeeds, stripRobotEmoji } from './seed.data';
+import { SEED_ASSETS, SEED_ASSET_PACKS, SEED_GAMES, SEED_ROBOTS, robotPlayerSeed, officialRoomSeeds, stripRobotEmoji } from './seed.data';
 import { normalizeOwner } from './utils/roomPolicy';
 
-export { SEED_GAMES, SEED_ROBOTS, SEED_VOICE_PACKS };
+export { SEED_GAMES, SEED_ROBOTS, SEED_ASSET_PACKS, SEED_ASSETS };
 
 export interface SeedResult {
   inserted: number;
@@ -23,30 +23,17 @@ export interface SeedResult {
 }
 
 /**
- * 幂等写入种子游戏：已存在相同 slug 则保留用户数据，但同步 mode 等代码权威的结构性字段。
- * （旧库记录早于 mode 字段写入，跳过会导致 2048 被当成房间模式、单人快开被拒。）
+ * 写入种子游戏：**已存在的完全不碰**。
+ *
+ * 以前这里会「校正」mode / numbers / variants / boards，结果是在后台改了配置、重启又被打回去。
+ * 代码只负责首次把游戏灌进去，之后运营配置以库为准。
  */
 export async function seedGames(): Promise<SeedResult> {
   let inserted = 0;
   let kept = 0;
   for (const game of SEED_GAMES) {
-    const existing = await MGame.findOne({ slug: game.slug }).lean(true);
+    const existing = await MGame.findOne({ slug: game.slug }, { _id: 1 }).lean(true);
     if (existing) {
-      // 结构性字段以种子为准回填/校正，其余字段不覆盖运营数据
-      const patch: Record<string, unknown> = {};
-      if (existing.mode !== game.mode) patch.mode = game.mode;
-      if (existing.numbers?.min !== game.numbers.min || existing.numbers?.max !== game.numbers.max) {
-        patch.numbers = game.numbers;
-      }
-      // 玩法变体 / 分榜也是代码权威的结构性配置（贪吃蛇：无尽 + 多人、两张榜）
-      const variantsChanged = JSON.stringify(existing.variants || []) !== JSON.stringify(game.variants || []);
-      if (variantsChanged) patch.variants = game.variants || [];
-      const boardsChanged = JSON.stringify(existing.boards || []) !== JSON.stringify(game.boards || []);
-      if (boardsChanged) patch.boards = game.boards || [];
-      if (Object.keys(patch).length > 0) {
-        await MGame.updateOne({ _id: existing._id }, { $set: patch });
-        console.log(`🔧 游戏数据校正: ${game.slug} ${JSON.stringify(patch)}`);
-      }
       kept++;
       continue;
     }
@@ -97,22 +84,31 @@ export async function seedRobots(): Promise<SeedResult> {
  *
  * 早期 seed / admin 会把机器人名字写成「🤖 贪吃蛇 1 号」，源头（seed.data / admin）
  * 现在不再拼前缀，但库里已落库的 users.name / users.nickname / players.nickname 还带着。
- * 这里做一次性数据迁移：按正则批量去前缀，幂等，跑第二遍没有匹配就什么都不做。
+ * 这里做一次性数据迁移，幂等，跑第二遍没有匹配就什么都不做。
+ *
+ * 实现注意：**不能用 /🤖/ 这种正则去查库**。JS 在非 unicode 模式下会把 emoji 的
+ * 代理对写成 `\ud83e\udd16`，MongoDB 的 PCRE 不认识 `\u` 转义，整个 seed 流程会直接抛错
+ * （进而 voice_packs / 官方房等后续种子全部跳过）。改成「先捞人机 player，再按 _id 捞 user」，
+ * 纯 ID 查询，既不扫全表也不碰正则。
  */
 export async function cleanRobotEmoji(): Promise<SeedResult> {
   let changed = 0;
-  const users = await MUser.find({
-    $or: [{ name: /^\s*🤖/ }, { nickname: /^\s*🤖/ }],
-  }).lean(true);
-  for (const u of users as any[]) {
-    const patch: Record<string, unknown> = { updatedAt: new Date() };
-    if (u.name) patch.name = stripRobotEmoji(u.name);
-    if (u.nickname) patch.nickname = stripRobotEmoji(u.nickname);
+  const robots = await MPlayer.find({ type: 'robot' }, { user_id: 1, nickname: 1 }).lean(true) as any[];
+  const userIds = [...new Set(robots.map(r => r.user_id).filter(Boolean))];
+  const users = userIds.length
+    ? await MUser.find({ _id: { $in: userIds } }, { name: 1, nickname: 1 }).lean(true) as any[]
+    : [];
+  for (const u of users) {
+    const patch: Record<string, unknown> = {};
+    if (u.name && stripRobotEmoji(u.name) !== u.name) patch.name = stripRobotEmoji(u.name);
+    if (u.nickname && stripRobotEmoji(u.nickname) !== u.nickname) patch.nickname = stripRobotEmoji(u.nickname);
+    if (!Object.keys(patch).length) continue;
+    patch.updatedAt = new Date();
     await MUser.updateOne({ _id: u._id }, { $set: patch });
     changed++;
   }
-  const players = await MPlayer.find({ nickname: /^\s*🤖/ }).lean(true);
-  for (const p of players as any[]) {
+  for (const p of robots) {
+    if (!p.nickname || stripRobotEmoji(p.nickname) === p.nickname) continue;
     await MPlayer.updateOne(
       { _id: p._id },
       { $set: { nickname: stripRobotEmoji(p.nickname), updatedAt: new Date() } },
@@ -193,34 +189,41 @@ export async function seedOfficialRooms(): Promise<SeedResult> {
  * 幂等写入语音包：已存在则只同步文件 URL / 权限要求这类配置字段，
  * 不动运营可能修改的 name/desc/cover。
  */
-export async function seedVoicePacks(): Promise<SeedResult> {
+/** 一次性初始化标记：写进去之后重启不再灌资源（管理端删掉的资源不会被复活） */
+const ASSETS_SEED_KEY = 'assets_seed_v1';
+
+/**
+ * 资源种子：**只在首次部署执行一次**。
+ *
+ * 为什么要有标记而不是「缺了就补」：资源是运营数据，后台会删图、换 URL、调上下架。
+ * 每次启动按种子补齐会让「删掉的又回来、改过的被覆盖」。灌过一次就永久放手，
+ * 以后新增资源走管理端（或删掉 `meta` 里这条标记重跑 seed）。
+ */
+export async function seedAssets(): Promise<SeedResult> {
+  const marker = await MMeta.findById(ASSETS_SEED_KEY).lean(true);
+  if (marker) return { inserted: 0, kept: 0 };
+
+  for (const pack of SEED_ASSET_PACKS) {
+    await MAssetPack.updateOne({ _id: pack._id }, { $setOnInsert: pack }, { upsert: true });
+  }
   let inserted = 0;
-  let kept = 0;
-  for (const pack of SEED_VOICE_PACKS) {
-    const existing = await MVoicePack.findById(pack._id).lean(true);
-    if (existing) {
-      const patch: Record<string, unknown> = {};
-      if (JSON.stringify(existing.bgm) !== JSON.stringify(pack.bgm)) patch.bgm = pack.bgm;
-      if (JSON.stringify(existing.sfx) !== JSON.stringify(pack.sfx)) patch.sfx = pack.sfx;
-      if (JSON.stringify(existing.games || {}) !== JSON.stringify(pack.games || {})) patch.games = pack.games;
-      if (!!existing.isDefault !== pack.isDefault) patch.isDefault = pack.isDefault;
-      if (!!existing.requirePermission !== pack.requirePermission) patch.requirePermission = pack.requirePermission;
-      if (existing.status !== pack.status) patch.status = pack.status;
-      if (Object.keys(patch).length) {
-        await MVoicePack.updateOne({ _id: pack._id }, { $set: patch });
-      }
-      kept++;
-      continue;
-    }
-    await MVoicePack.updateOne({ _id: pack._id }, { $setOnInsert: pack }, { upsert: true });
-    inserted++;
+  for (const asset of SEED_ASSETS) {
+    // 按业务键 upsert：库里若已手工建过同 group/key 的行，不会插出重复（唯一索引会拦）
+    const res = await MAsset.updateOne(
+      { pack: asset.pack, game: asset.game, group: asset.group, key: asset.key },
+      { $setOnInsert: asset },
+      { upsert: true },
+    );
+    if (res.upsertedCount) inserted++;
   }
-  if (inserted || kept) {
-    // 配置变了要让列表缓存尽快回源
-    await redis.del(config.prefix + 'voice-packs').catch(() => 0);
-    console.log(`🎵 语音包初始化：新增 ${inserted} 个，已存在 ${kept} 个`);
-  }
-  return { inserted, kept };
+  await MMeta.updateOne(
+    { _id: ASSETS_SEED_KEY },
+    { $set: { value: { packs: SEED_ASSET_PACKS.length, assets: inserted, at: new Date() }, updatedAt: new Date() } },
+    { upsert: true },
+  );
+  await redis.del(config.prefix + 'asset-packs').catch(() => 0);
+  console.log(`🎨 资源初始化（仅首次）：${SEED_ASSET_PACKS.length} 个包 / 新增 ${inserted} 条资源`);
+  return { inserted, kept: 0 };
 }
 
 /** 服务启动时统一初始化 */
@@ -229,7 +232,7 @@ export async function seedAll() {
   await seedRobots();
   await cleanRobotEmoji();
   await seedOfficialRooms();
-  await seedVoicePacks();
+  await seedAssets();
 }
 
 // 支持作为脚本单独运行：bun run seed（server 目录下）

@@ -22,70 +22,93 @@
  *   队友之间不会互相碰撞致死（同队豁免），可以互相掩护；
  *   一支队伍全员出局即被淘汰，只剩一支队伍时该队获胜。
  *
- * 场上可拾取物（state.food）统一成一个数组，用 kind 区分四类：
- *   普通食物（分三档：小的多、大的少）/ 尸体残骸 / 磁铁 / 闪电。
+ * 场上可拾取物（state.food）统一成一个数组，用 kind 区分：
+ *   普通食物（分三档：小的多、大的少）/ 尸体残骸 / 道具（磁铁、星星）。
+ * 道具是**注册表**（SNAKE_ITEM_DEFS）驱动的，加新道具只往数组里加一项。
+ *
+ * 常量与判定顺序的唯一来源是《贪吃蛇大作战 规则规格》，改动前先改规格文档。
  */
 
 export type SnakeVariant = 'endless' | 'team';
 
 /** 世界尺寸（像素）：远大于视口，镜头跟随主角 */
-export const SNAKE_WORLD_W = 3600;
-export const SNAKE_WORLD_H = 2600;
+export const SNAKE_WORLD_W = 4800;
+export const SNAKE_WORLD_H = 3400;
 /** 场上同时存在的普通食物数量 */
-export const SNAKE_FOOD_COUNT = 70;
-/** 场上同时存在的道具数量（磁铁 / 闪电） */
-export const SNAKE_ITEM_COUNT = 6;
+export const SNAKE_FOOD_COUNT = 100;
+/** 场上同时存在的道具数量 */
+export const SNAKE_ITEM_COUNT = 8;
 /**
  * 食物分档：小食物数量多、大食物数量少。
  * - radius 决定视觉大小与碰撞判定；
  * - value 决定收益（同时按比例决定身体增长，见 SNAKE_GROW_PER_SCORE）；
- * - weight 是抽取权重（相对值，不必凑满 100）：小档 62%、中档 26%、大档 12%。
- * 加权平均单颗价值 ≈ 9.8 分，与旧版"每颗 10 分"基本持平，分档只是让收益更有起伏。
+ * - weight 是抽取权重：60 / 28 / 12（期望单颗价值 ≈ 12.96）。
  */
 export const SNAKE_FOOD_TIERS = [
-  { radius: 5, value: 5, weight: 62 },
-  { radius: 8, value: 12, weight: 26 },
-  { radius: 11, value: 30, weight: 12 },
+  { radius: 6, value: 6, weight: 60 },
+  { radius: 12, value: 18, weight: 28 },
+  { radius: 18, value: 36, weight: 12 },
 ] as const;
 /** 最小档（小食物）的分值 */
 export const SNAKE_FOOD_SCORE = SNAKE_FOOD_TIERS[0].value;
-/** 每 1 分值增长的身体像素（旧版 10 分 → 18px，保持同一条比例线） */
-export const SNAKE_GROW_PER_SCORE = 1.8;
-/** 道具半径（像素） */
-export const SNAKE_ITEM_RADIUS = 9;
+/** 每 1 分值增长的身体像素 */
+export const SNAKE_GROW_PER_SCORE = 3;
 
 /**
  * 场上可拾取物的类型（用数字而非字符串：快照每帧广播，体积越小越好）。
- * 客户端与 AI 侧各自镜像一份同名常量。
+ * 客户端与 AI 侧各自镜像一份同名常量；道具 kind 由 SNAKE_ITEM_DEFS 分配（从 2 起）。
  */
-export const SNAKE_KIND_FOOD = 0;      // 普通食物
-export const SNAKE_KIND_CORPSE = 1;    // 尸体残骸
-export const SNAKE_KIND_MAGNET = 2;    // 磁铁
-export const SNAKE_KIND_LIGHTNING = 3; // 闪电
+export const SNAKE_KIND_FOOD = 0;   // 普通食物
+export const SNAKE_KIND_CORPSE = 1; // 尸体残骸
 
 /** 一个可拾取物（食物 / 残骸 / 道具） */
 export interface SnakeFoodItem {
+  /** 稳定自增 id：增量广播与删除依赖它（客户端按 id 增删，不按坐标猜） */
+  id: number;
   x: number;
   y: number;
   /** 半径（像素）：决定碰撞判定与绘制大小 */
   r: number;
   /** 分值：吃到后增加的分数；道具为 0 */
   v: number;
-  /** 类型：SNAKE_KIND_* */
+  /** 类型：0 食物 / 1 残骸 / ≥2 道具（见 SNAKE_ITEM_DEFS） */
   k: number;
 }
 
 /**
- * 道具：吃到不加长度、不加分，只有特殊效果（因此不会污染能量收支）。
- * - magnet：持续期间把蛇头一定半径内的食物拉过来（自动收菜）；
- * - lightning：持续期间小幅度加速（比主动加速 1.85 温和得多）。
- * 效果是"刷新式"：再吃一个就把剩余时间重置为完整时长，不叠加倍率。
+ * 道具注册表。**加新道具只往这里加一项**，不要在各处写 `if (kind === xxx)`：
+ * - kind：广播/快照里的稳定类型号，一旦上线不要再改（客户端按它取皮肤）；
+ * - key：资源系统里的皮肤 key（资源包 `games[game].skins.items[key]`，见 GM-snake-25）；
+ * - weight：抽取权重；radius：半径；durationMs：效果持续时长。
+ *
+ * 现有两种：
+ * - magnet 磁铁：把蛇头 220px 内的非道具可拾取物以 300px/s 拉过来；
+ * - star 星星：获得无敌（免疫别人身体与头对头，**不免撞墙**）。
+ * 效果都是"刷新式"：再吃一个把剩余时间重置为完整时长，不叠加。
  */
-export const SNAKE_MAGNET_MS = 6000;
-export const SNAKE_MAGNET_RADIUS = 180;
-export const SNAKE_MAGNET_PULL = 260;
-export const SNAKE_LIGHTNING_MS = 4000;
-export const SNAKE_LIGHTNING_MULT = 1.35;
+export interface SnakeItemDef {
+  kind: number;
+  key: string;
+  label: string;
+  weight: number;
+  radius: number;
+  durationMs: number;
+}
+export const SNAKE_ITEM_DEFS: SnakeItemDef[] = [
+  { kind: 2, key: 'magnet', label: '磁铁', weight: 50, radius: 11, durationMs: 6000 },
+  { kind: 3, key: 'star', label: '星星', weight: 50, radius: 11, durationMs: 2500 },
+];
+/** kind -> 定义（吃判定与皮肤查找都走它，避免散落的 if 分支） */
+export const SNAKE_ITEM_BY_KIND: Record<number, SnakeItemDef> = Object.fromEntries(
+  SNAKE_ITEM_DEFS.map(d => [d.kind, d]),
+);
+/** 道具半径（默认档；单个道具可在注册表里覆盖） */
+export const SNAKE_ITEM_RADIUS = SNAKE_ITEM_DEFS[0].radius;
+export const SNAKE_KIND_MAGNET = 2;
+export const SNAKE_KIND_STAR = 3;
+
+export const SNAKE_MAGNET_RADIUS = 220;
+export const SNAKE_MAGNET_PULL = 300;
 
 /**
  * 尸体残骸：蛇死后沿身体留下一串可被吃的残骸。
@@ -104,51 +127,72 @@ export const SNAKE_LIGHTNING_MULT = 1.35;
  * ρ = 0.7 → 2.3 倍；ρ = 0.5 → 1 倍（完全不放大，纯转移）。
  */
 export const SNAKE_CORPSE_RATIO = 0.9;
-export const SNAKE_CORPSE_PER_LENGTH = 22;
-export const SNAKE_CORPSE_MIN = 3;
-export const SNAKE_CORPSE_MAX = 44;
-/** 单颗残骸的价值上限（与最大档食物同值） */
-export const SNAKE_CORPSE_VALUE_MAX = 30;
+export const SNAKE_CORPSE_PER_LENGTH = 30;
+export const SNAKE_CORPSE_MIN = 4;
+export const SNAKE_CORPSE_MAX = 64;
+/** 单颗残骸的价值上限 */
+export const SNAKE_CORPSE_VALUE_MAX = 45;
 /** 场上残骸的总价值上限（世界总能量的硬顶） */
-export const SNAKE_CORPSE_FIELD_CAP = 1800;
+export const SNAKE_CORPSE_FIELD_CAP = 3600;
 /** 场上残骸的数量上限（同时也是快照体积的保护） */
-export const SNAKE_CORPSE_FIELD_MAX = 60;
+export const SNAKE_CORPSE_FIELD_MAX = 80;
 
 /** 推进间隔（毫秒）：20Hz，客户端负责插值成 60fps */
 export const SNAKE_TICK_MS = 50;
 
 /** 蛇身半径 / 蛇头半径（像素） */
-export const SNAKE_RADIUS = 12;
-export const SNAKE_HEAD_RADIUS = 13;
-/** 基础速度 / 加速倍率（像素每秒） */
-export const SNAKE_SPEED = 170;
-export const SNAKE_BOOST_MULT = 1.85;
+export const SNAKE_RADIUS = 15;
+export const SNAKE_HEAD_RADIUS = 16;
+/**
+ * 基础速度（像素每秒）：巡航速度。
+ * 原本 170 偏快（贴脸躲闪来不及），下调到 125。
+ */
+export const SNAKE_SPEED = 125;
+/**
+ * 加速后的**绝对**速度（像素每秒）：独立于基础速度单独定义，
+ * 这样以后再调巡航速度，加速手感不会跟着漂。
+ */
+export const SNAKE_BOOST_SPEED = 314.5;
+/** 加速倍率（由上面两个常量推导，别手写） */
+export const SNAKE_BOOST_MULT = SNAKE_BOOST_SPEED / SNAKE_SPEED;
 /**
  * 最小转弯半径（像素）：手感用"能拐多小的弯"描述，角速度由 ω = v / R 推导。
  * 这样速度越快角速度越大，但轨迹半径永远不小于 R —— 允许贴着很小的圈盘旋，
  * 又不会出现"原地自转"这种物理上说不通的操作。
- * 26px ≈ 两倍蛇身直径，视觉上就是一个小圆环。
+ *
+ * 基础半径 34 → 25：**角速度 ω = 125/25 = 5.00 rad/s 与调速前一致**，
+ * 所以"降速"只改直线速度，转向跟手度不变（半径跟着速度等比缩小的必然结果）。
  */
-export const SNAKE_MIN_TURN_RADIUS = 26;
-export const SNAKE_BOOST_MIN_TURN_RADIUS = 42;
-/** 最大转向角速度（弧度每秒，由上面的半径推导）≈ 6.54 / 7.49 */
+export const SNAKE_MIN_TURN_RADIUS = 25;
+export const SNAKE_BOOST_MIN_TURN_RADIUS = 52;
+/** 最大转向角速度（弧度每秒，由上面的半径推导）= 5.00 / 6.05 */
 export const SNAKE_TURN_RATE = SNAKE_SPEED / SNAKE_MIN_TURN_RADIUS;
-export const SNAKE_BOOST_TURN_RATE = (SNAKE_SPEED * SNAKE_BOOST_MULT) / SNAKE_BOOST_MIN_TURN_RADIUS;
+export const SNAKE_BOOST_TURN_RATE = SNAKE_BOOST_SPEED / SNAKE_BOOST_MIN_TURN_RADIUS;
 
 /** 初始身长 / 上限（像素） */
-export const SNAKE_BODY_LENGTH = 110;
-export const SNAKE_MAX_LENGTH = 900;
+export const SNAKE_BODY_LENGTH = 160;
+export const SNAKE_MAX_LENGTH = 2400;
 
-/** 加速：持续时长 / 冷却（毫秒）—— 3s 冲刺，1 分钟一次 */
-export const SNAKE_BOOST_MS = 3000;
-export const SNAKE_BOOST_CD_MS = 60_000;
-/** 无尽模式：重生无敌时间（毫秒）。死亡后由玩家点「重生」才复活，不再自动重生 */
+/**
+ * 加速：**按住生效，无 CD、无时长上限**，代价是从尾部扣身长。
+ * - BOOST_DRAIN：每秒扣除的身长像素；
+ * - BOOST_MIN_LEN：低于此长度无法加速，加速中也扣不到它以下。
+ * 加速不扣分、不影响分数；吃食物可恢复长度。
+ */
+export const SNAKE_BOOST_DRAIN = 18;
+export const SNAKE_BOOST_MIN_LEN = 120;
+/** 重生无敌时间（毫秒）。死亡后由玩家点「重生」才复活，不自动重生 */
 export const SNAKE_INVINCIBLE_MS = 3000;
+
+/** 团队模式限时（毫秒）：8 分钟，时间到按团队总分判胜 */
+export const SNAKE_TEAM_MATCH_MS = 480_000;
+/** 团队"先到目标分即胜"，0 = 关闭（只按时间与存活判） */
+export const SNAKE_TEAM_TARGET_SCORE = 0;
 
 /** 内部路径采样步长（像素）：越小身体曲线越顺，越大内存/CPU 越省 */
 export const SNAKE_PATH_STEP = 3;
 /** 发给客户端的身体采样间距（像素）：按弧长等距，index 与身长一一对应，便于插值 */
-export const SNAKE_SEG_SPACING = 18;
+export const SNAKE_SEG_SPACING = 22;
 /** 碰撞判定半径：头圆 + 身体半径（略微宽容一点，避免"看着没碰到却死"） */
 const SNAKE_HIT_R = SNAKE_HEAD_RADIUS + SNAKE_RADIUS * 0.8;
 const SNAKE_HIT_R2 = SNAKE_HIT_R * SNAKE_HIT_R;
@@ -173,16 +217,14 @@ export interface SnakePlayerState {
   score: number;
   /** 本局历史最高分（跨重生，用于无尽榜与 HUD） */
   best: number;
-  /** 无敌截止时间戳（ms）；无敌期间不结算别人蛇身的碰撞（撞自己本来就不死，撞墙照常死） */
+  /** 无敌截止时间戳（ms）：无敌期间不结算别人蛇身的碰撞（撞自己本来就不死，撞墙照常死） */
   invincibleUntil: number;
-  /** 加速截止时间戳（ms） */
-  boostUntil: number;
-  /** 加速冷却结束时间戳（ms） */
-  boostReadyAt: number;
+  /** 加速按钮是否按住（每 tick 可更新）；真正生效还要看身长是否够 */
+  boostHeld: boolean;
   /** 磁铁效果截止时间戳（ms）：期间自动吸附附近食物 */
   magnetUntil: number;
-  /** 闪电效果截止时间戳（ms）：期间小幅加速 */
-  lightningUntil: number;
+  /** 星星效果截止时间戳（ms）：期间免疫别人身体与头对头（不免撞墙） */
+  starUntil: number;
   /** 无尽模式：可重生时间戳（ms） */
   respawnAt: number;
   /** 重生次数（HUD 展示用） */
@@ -196,7 +238,7 @@ export interface SnakeState {
   w: number;
   h: number;
   tick: number;
-  /** 场上可拾取物（普通食物 / 尸体残骸 / 磁铁 / 闪电） */
+  /** 场上可拾取物（普通食物 / 尸体残骸 / 道具） */
   food: SnakeFoodItem[];
   snakes: SnakePlayerState[];
   status: 'playing' | 'over';
@@ -206,6 +248,10 @@ export interface SnakeState {
   variant: SnakeVariant;
   /** 团队模式下各队总积分：team -> 累计分数 */
   teamScores?: Record<string, number>;
+  /** 团队模式结束时间戳（ms）；0 = 不限时（无尽模式） */
+  endsAt: number;
+  /** 可拾取物自增 id（快照增量与客户端删除依赖它） */
+  nextItemId: number;
 }
 
 export interface SnakeStepResult {
@@ -278,16 +324,30 @@ function pickTier(random: () => number) {
   return SNAKE_FOOD_TIERS[0];
 }
 
+/** 按权重抽一种道具（注册表驱动：加新道具自动参与抽取） */
+function pickItemDef(random: () => number): SnakeItemDef {
+  const total = SNAKE_ITEM_DEFS.reduce((a, d) => a + d.weight, 0);
+  let r = random() * total;
+  for (const d of SNAKE_ITEM_DEFS) {
+    r -= d.weight;
+    if (r <= 0) return d;
+  }
+  return SNAKE_ITEM_DEFS[0];
+}
+
+const nextId = (state: SnakeState) => state.nextItemId++;
+
 /** 随机撒一颗普通食物（分档）；连续失败就放弃（场上食物略少也不影响可玩性） */
 export function spawnFood(state: SnakeState, random: () => number = Math.random): SnakeFoodItem | null {
-  const margin = 40;
+  const margin = 50;
   const tier = pickTier(random);
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 80; i++) {
     const x = margin + random() * (state.w - margin * 2);
     const y = margin + random() * (state.h - margin * 2);
-    if (nearSnake(state, x, y, 70)) continue;
-    if (state.food.some(f => dist(f.x, f.y, x, y) < 55)) continue;
+    if (nearSnake(state, x, y, 90)) continue;
+    if (state.food.some(f => dist(f.x, f.y, x, y) < 70)) continue;
     const item: SnakeFoodItem = {
+      id: nextId(state),
       x: round1(x),
       y: round1(y),
       r: tier.radius,
@@ -300,20 +360,22 @@ export function spawnFood(state: SnakeState, random: () => number = Math.random)
   return null;
 }
 
-/** 随机撒一个道具（磁铁 / 闪电各一半）；道具不加长度也不加分 */
+/** 随机撒一个道具；道具不加长度也不加分 */
 export function spawnItem(state: SnakeState, random: () => number = Math.random): SnakeFoodItem | null {
-  const margin = 60;
-  for (let i = 0; i < 60; i++) {
+  const margin = 70;
+  const def = pickItemDef(random);
+  for (let i = 0; i < 80; i++) {
     const x = margin + random() * (state.w - margin * 2);
     const y = margin + random() * (state.h - margin * 2);
-    if (nearSnake(state, x, y, 90)) continue;
-    if (state.food.some(f => dist(f.x, f.y, x, y) < 70)) continue;
+    if (nearSnake(state, x, y, 110)) continue;
+    if (state.food.some(f => dist(f.x, f.y, x, y) < 90)) continue;
     const item: SnakeFoodItem = {
+      id: nextId(state),
       x: round1(x),
       y: round1(y),
-      r: SNAKE_ITEM_RADIUS,
+      r: def.radius,
       v: 0,
-      k: random() < 0.5 ? SNAKE_KIND_MAGNET : SNAKE_KIND_LIGHTNING,
+      k: def.kind,
     };
     state.food.push(item);
     return item;
@@ -389,10 +451,9 @@ function newSnake(id: string, x: number, y: number, angle: number, team = ''): S
     score: 0,
     best: 0,
     invincibleUntil: 0,
-    boostUntil: 0,
-    boostReadyAt: 0,
+    boostHeld: false,
     magnetUntil: 0,
-    lightningUntil: 0,
+    starUntil: 0,
     respawnAt: 0,
     respawns: 0,
     team,
@@ -421,7 +482,8 @@ export function createSnakeState(playerIds: string[], opts: CreateSnakeOptions =
     foodCount = SNAKE_FOOD_COUNT,
     itemCount = SNAKE_ITEM_COUNT,
     random = Math.random,
-    variant = 'team',
+    // 规格 §9.3：variant 必须显式传参，缺省按无尽模式
+    variant = 'endless',
     teams = {},
   } = opts;
 
@@ -434,6 +496,9 @@ export function createSnakeState(playerIds: string[], opts: CreateSnakeOptions =
     status: 'playing',
     winner: '',
     variant,
+    // 团队模式限时 8 分钟；无尽模式不限时（对局永不结束）
+    endsAt: variant === 'team' ? Date.now() + SNAKE_TEAM_MATCH_MS : 0,
+    nextItemId: 1,
   };
 
   for (const id of playerIds) addSnake(state, id, random, teams[id] || '');
@@ -463,15 +528,15 @@ export function steerSnake(state: SnakeState, playerId: string, angle: number): 
   return true;
 }
 
-/** 加速：冷却结束才可用，持续 SNAKE_BOOST_MS；返回是否生效 */
-export function boostSnake(state: SnakeState, playerId: string, now: number = Date.now()): boolean {
+/**
+ * 加速按钮的按住状态（每 tick 可更新，无 CD、无时长上限）。
+ * 真正是否加速由 stepSnake 判断：`boostHeld && length > SNAKE_BOOST_MIN_LEN`。
+ */
+export function setBoost(state: SnakeState, playerId: string, held: boolean): boolean {
   if (state.status !== 'playing') return false;
   const snake = state.snakes.find(s => s.id === playerId);
   if (!snake || !snake.alive) return false;
-  if ((snake.boostUntil || 0) > now) return false;
-  if ((snake.boostReadyAt || 0) > now) return false;
-  snake.boostUntil = now + SNAKE_BOOST_MS;
-  snake.boostReadyAt = now + SNAKE_BOOST_CD_MS;
+  snake.boostHeld = held === true;
   return true;
 }
 
@@ -496,10 +561,9 @@ export function respawnSnake(
   snake.respawnAt = 0;
   snake.respawns = (snake.respawns || 0) + 1;
   snake.invincibleUntil = now + SNAKE_INVINCIBLE_MS;
-  snake.boostUntil = 0;
-  snake.boostReadyAt = now;
+  snake.boostHeld = false;
   snake.magnetUntil = 0;
-  snake.lightningUntil = 0;
+  snake.starUntil = 0;
   return true;
 }
 
@@ -541,24 +605,31 @@ interface Move {
   oy: number;
   nx: number;
   ny: number;
+  /** 这一 tick 是否真的在加速（按住 + 身长够） */
+  boosting: boolean;
 }
 
 /**
  * 撞身体：蛇头这一 tick 扫过的线段到对方身体中心线的距离。自己的蛇身不参与判定。
  * 团队模式下同队成员之间不互相碰撞（队友可以互相掩护）。
+ *
+ * 对方**蛇头附近**（弧长 < 2×HEAD_RADIUS 的一段）不参与判定：那段该交给头对头裁决。
+ * 否则 HIT_R(28) 大于头对头触发距离(32)的一半，正面对撞会先被"撞身体"判死，
+ * 身长/护盾根本没机会参与，规格 §6.C 的"长者活、短者死"永远触发不了。
  */
 function hitsBody(state: SnakeState, m: Move, now: number): boolean {
-  // 无敌只免疫别人的身体；撞自己本来就没事，撞墙照常死
+  // 无敌（重生盾 / 星星）只免疫别人的身体；撞自己本来就没事，撞墙照常死
   if ((m.s.invincibleUntil || 0) > now) return false;
+  const headGuard = SNAKE_HEAD_RADIUS * 2;
   for (const other of state.snakes) {
     if (!other.alive || other === m.s) continue;
     // 同队豁免：队友撞到队友不算死
     if (m.s.team && other.team === m.s.team) continue;
     const path = other.path;
-    // 从第 2 个采样点开始扫：前两个点属于对方的蛇头（path[0] 就是对方上一 tick 的头），
-    // 头碰头交给 stepSnake 里的"对撞裁决"（按身长判），否则这里会先把两边一起判死，
-    // 谁更长/谁有盾都没机会参与判定。
+    let acc = 0;
     for (let i = 2; i < path.length; i += 2) {
+      acc += dist(path[i - 1][0], path[i - 1][1], path[i][0], path[i][1]);
+      if (acc < headGuard) continue;
       if (pointSegDist2(path[i][0], path[i][1], m.ox, m.oy, m.nx, m.ny) < SNAKE_HIT_R2) return true;
     }
   }
@@ -594,7 +665,8 @@ function applyMagnet(state: SnakeState, now: number, dt: number) {
     if (!s.alive) continue;
     if ((s.magnetUntil || 0) <= now) continue;
     for (const f of state.food) {
-      if (f.k === SNAKE_KIND_MAGNET || f.k === SNAKE_KIND_LIGHTNING) continue;
+      // 道具不吸（k >= 2），食物与残骸都吸
+      if (f.k !== SNAKE_KIND_FOOD && f.k !== SNAKE_KIND_CORPSE) continue;
       const dx = s.x - f.x;
       const dy = s.y - f.y;
       const d = Math.hypot(dx, dy);
@@ -613,10 +685,28 @@ function applyMagnet(state: SnakeState, now: number, dt: number) {
  * - 上限：场上残骸数量与总价值都有硬顶，多人同时死亡也不会把世界堆成雪球。
  */
 function dropCorpses(state: SnakeState, s: SnakePlayerState) {
+  // 满场替换：场上数量/价值已顶格时，先移除最低价值的残骸腾位置（最多 15 颗或 25%），
+  // 移除即销毁 —— 等价于额外衰减，保证"残骸总量永不突破硬顶"。
+  const tryDrop = () => dropCorpsesOnce(state, s);
+  if (tryDrop() !== 'full') return;
+  const corpses = state.food.filter(f => f.k === SNAKE_KIND_CORPSE);
+  const removeMax = Math.min(15, Math.ceil(corpses.length * 0.25));
+  if (removeMax <= 0) return;
+  corpses.sort((a, b) => a.v - b.v);
+  const victims = new Set(corpses.slice(0, removeMax).map(f => f.id));
+  state.food = state.food.filter(f => !victims.has(f.id));
+  if (tryDrop() !== 'ok') {
+    // 腾完还是放不下：放弃本次掉落（只记日志，不抛错）
+    console.log(`⚠️ 残骸掉落放弃：player=${s.id} score=${s.score}`);
+  }
+}
+
+/** 返回 'ok' 成功 / 'full' 场上顶格 / 'empty' 无分可掉 */
+function dropCorpsesOnce(state: SnakeState, s: SnakePlayerState): 'ok' | 'full' | 'empty' {
   const score = Math.max(0, Math.floor(s.score || 0));
   // 目标总价值：死亡分数的 ρ 倍（向下取整，保证"残骸总价值 ≤ score × ρ"严格成立）
   const targetTotal = Math.floor(score * SNAKE_CORPSE_RATIO);
-  if (targetTotal <= 0) return;
+  if (targetTotal <= 0) return 'empty';
 
   // 场上已有的残骸：数量与总价值都要留出余量
   let onField = 0;
@@ -634,24 +724,25 @@ function dropCorpses(state: SnakeState, s: SnakePlayerState) {
     SNAKE_CORPSE_MAX,
   );
   count = Math.min(count, SNAKE_CORPSE_FIELD_MAX - onField);
-  if (count <= 0) return;
+  if (count <= 0) return 'full';
 
   // 单颗价值：均摊，单颗封顶；场上总价值还有硬顶
   let per = Math.min(Math.floor(targetTotal / count), SNAKE_CORPSE_VALUE_MAX);
   per = Math.min(per, Math.floor((SNAKE_CORPSE_FIELD_CAP - valueOnField) / count));
-  if (per < 1) return;
+  if (per < 1) return 'full';
 
   // 余数补给前几颗：让残骸总价值尽量贴近 score × ρ（且绝不超过）
   const remainder = Math.min(targetTotal - per * count, count - per);
 
   // 沿身体摆放：蛇头在 path[0]，尾巴在末尾
   const spine = snakeSpine(s);
-  if (!spine.length) return;
+  if (!spine.length) return 'empty';
   const step = count > 1 ? (spine.length - 1) / (count - 1) : 0;
   for (let i = 0; i < count; i++) {
     const p = spine[Math.min(spine.length - 1, Math.round(i * step))];
     const v = per + (i < remainder ? 1 : 0);
     state.food.push({
+      id: nextId(state),
       x: round1(p[0]),
       y: round1(p[1]),
       r: snakeRadiusForValue(v),
@@ -659,11 +750,17 @@ function dropCorpses(state: SnakeState, s: SnakePlayerState) {
       k: SNAKE_KIND_CORPSE,
     });
   }
+  return 'ok';
 }
 
 /**
  * 推进一 tick（原地修改 state）。
  * dt 由运行时按真实经过时间给出，速度快慢与帧/tick 抖动解耦。
+ */
+/**
+ * 推进一 tick（原地修改 state）。判定顺序严格按规格 §4，不可调换：
+ * ① 先算所有存活蛇的 move → ② 撞墙/撞身体 → ③ 头对头 → ④ 应用 move（死者掉残骸、生者截断、
+ * 加速者扣长度）→ ⑤ 磁铁吸附 → ⑥ 吃判定 + 补位 → ⑦ tick++ → ⑧ 模式结算。
  */
 export function stepSnake(
   state: SnakeState,
@@ -675,22 +772,18 @@ export function stepSnake(
   const now = opts.now ?? Date.now();
   const random = opts.random ?? Math.random;
   const dt = clamp(opts.dt ?? SNAKE_TICK_MS / 1000, 0.004, 0.25);
-  const variant: SnakeVariant = state.variant || 'team';
+  const variant: SnakeVariant = state.variant || 'endless';
   const died: string[] = [];
   const ate: string[] = [];
-  // 对局是否结束（团队分支与兼容分支共用，必须在分支之前声明，否则会踩 TDZ）
   let over = false;
 
-  // 1. 先算所有人的新位置（同一 tick 同时移动，先算后应用，避免"先动的占便宜"）
+  // ① 先算所有人的新位置（同一 tick 同时移动，先算后应用，避免"先动的占便宜"）
   const moves: Move[] = [];
   for (const s of state.snakes) {
     if (!s.alive) continue;
-    const boosting = (s.boostUntil || 0) > now;
-    const lightning = (s.lightningUntil || 0) > now;
-    // 主动加速优先于闪电道具（1.85 > 1.35，两者不叠加）
-    const mult = boosting ? SNAKE_BOOST_MULT : (lightning ? SNAKE_LIGHTNING_MULT : 1);
-    const speed = SNAKE_SPEED * mult;
-    // 角速度由"最小转弯半径"反推：v / R，所以加速时转得更快但弯更大
+    // 按住加速 + 身长够才生效；加速时转弯半径更大（更危险）
+    const boosting = s.boostHeld === true && (s.length || 0) > SNAKE_BOOST_MIN_LEN;
+    const speed = SNAKE_SPEED * (boosting ? SNAKE_BOOST_MULT : 1);
     const rate = speed / (boosting ? SNAKE_BOOST_MIN_TURN_RADIUS : SNAKE_MIN_TURN_RADIUS);
     const angle = turnToward(s.angle, s.targetAngle, rate * dt);
     moves.push({
@@ -700,10 +793,11 @@ export function stepSnake(
       oy: s.y,
       nx: s.x + Math.cos(angle) * speed * dt,
       ny: s.y + Math.sin(angle) * speed * dt,
+      boosting,
     });
   }
 
-  // 2. 碰撞判定：撞墙 / 压上别人的蛇身 —— 都是"谁撞谁死"，被撞的一方不受牵连
+  // ② 碰撞判定：撞墙 / 压上别人的蛇身 —— 都是"谁撞谁死"，被撞的一方不受牵连
   const dead = new Set<string>();
   for (const m of moves) {
     if (
@@ -715,9 +809,9 @@ export function stepSnake(
     }
     if (hitsBody(state, m, now)) dead.add(m.s.id);
   }
-  // 3. 头对头：只有"双方互相接近"才算真对撞 —— 同向并行、擦肩而过都不触发，
-  //    这样并排跑的两条蛇不会因为蛇头挨得近就一起死。
-  //    裁决规则：无敌的一方胜；否则**身长更长者活**，等长才两败俱伤。
+
+  // ③ 头对头：只有"双方互相接近"才算真对撞 —— 同向并行、擦肩而过都不触发。
+  //    裁决：双盾都不死；单盾无盾方死；否则身长更长者活，等长双亡。
   //    已经因为撞墙/撞身体阵亡的一方不再连带对方（他撞了别人，自己担着）。
   for (let i = 0; i < moves.length; i++) {
     for (let j = i + 1; j < moves.length; j++) {
@@ -726,7 +820,6 @@ export function stepSnake(
       if (dist(a.nx, a.ny, b.nx, b.ny) >= SNAKE_HEAD_RADIUS * 2) continue;
       if (a.s.team && a.s.team === b.s.team) continue;
       if (!approaching(a, b)) continue;
-      // 已经死的一方不参与对撞结算：避免"我撞了他的身体死了，还顺手把他带走"
       if (dead.has(a.s.id) || dead.has(b.s.id)) continue;
       const aShielded = (a.s.invincibleUntil || 0) > now;
       const bShielded = (b.s.invincibleUntil || 0) > now;
@@ -746,14 +839,14 @@ export function stepSnake(
     }
   }
 
-  // 4. 应用移动（含死亡处理：死亡时留下尸体残骸）
+  // ④ 应用移动（死者掉残骸；生者写路径；加速者从尾部扣长度并截断）
   for (const m of moves) {
     const s = m.s;
     if (dead.has(s.id)) {
       s.alive = false;
-      // 无尽模式：死亡后停在"等待玩家决定"（重生 / 退出）状态，不再自动重生；
-      // respawnAt 归零即代表"等玩家点重生"，客户端据此弹框。
+      // 死亡后停在"等待玩家决定"（重生 / 退出）状态，不再自动重生
       s.respawnAt = 0;
+      s.boostHeld = false;
       died.push(s.id);
       dropCorpses(state, s);
       continue;
@@ -762,13 +855,18 @@ export function stepSnake(
     s.y = m.ny;
     s.angle = m.angle;
     pushPath(s, m.ox, m.oy);
+    if (m.boosting) {
+      // 加速的代价：身长按秒扣，扣到下限为止（不扣分、不影响分数）
+      s.length = Math.max(SNAKE_BOOST_MIN_LEN, s.length - SNAKE_BOOST_DRAIN * dt);
+      if (s.length <= SNAKE_BOOST_MIN_LEN) s.boostHeld = false;
+    }
     truncatePath(s);
   }
 
-  // 5. 磁铁吸附（先吸附再判定吃，否则拉过来的食物要等下一 tick 才入口）
+  // ⑤ 磁铁吸附（必须在吃判定之前，否则拉过来的要等下一 tick 才入口）
   applyMagnet(state, now, dt);
 
-  // 6. 吃食物 / 残骸 / 道具
+  // ⑥ 吃判定：食物 / 残骸 / 道具
   for (const m of moves) {
     const s = m.s;
     if (dead.has(s.id)) continue;
@@ -776,11 +874,11 @@ export function stepSnake(
       const f = state.food[i];
       if (dist(f.x, f.y, s.x, s.y) > SNAKE_HEAD_RADIUS + f.r) continue;
       state.food.splice(i, 1);
-      if (f.k === SNAKE_KIND_MAGNET) {
-        // 磁铁：刷新式生效（不叠加倍率）
-        s.magnetUntil = now + SNAKE_MAGNET_MS;
-      } else if (f.k === SNAKE_KIND_LIGHTNING) {
-        s.lightningUntil = now + SNAKE_LIGHTNING_MS;
+      const def = SNAKE_ITEM_BY_KIND[f.k];
+      if (def) {
+        // 道具：刷新式生效（不叠加），效果按注册表 key 分派
+        if (def.key === 'magnet') s.magnetUntil = now + def.durationMs;
+        else if (def.key === 'star') s.invincibleUntil = Math.max(s.invincibleUntil || 0, now + def.durationMs);
       } else {
         // 普通食物 / 尸体残骸：加分并按分值增长身体
         s.score += f.v;
@@ -788,39 +886,45 @@ export function stepSnake(
         s.length = Math.min(SNAKE_MAX_LENGTH, s.length + f.v * SNAKE_GROW_PER_SCORE);
       }
       if (!ate.includes(s.id)) ate.push(s.id);
-      // 补位：普通食物与道具吃完要补新的，尸体残骸吃完就没了（不复制能量）
-      if (f.k === SNAKE_KIND_FOOD) spawnFood(state, random);
-      else if (f.k === SNAKE_KIND_MAGNET || f.k === SNAKE_KIND_LIGHTNING) spawnItem(state, random);
     }
   }
+
+  // ⑥ 补位：每 tick 最多各补 1 个（被吃即时补、不复制能量）
+  if (countKind(state, SNAKE_KIND_FOOD) < SNAKE_FOOD_COUNT) spawnFood(state, random);
+  if (countKinds(state, k => !!SNAKE_ITEM_BY_KIND[k]) < SNAKE_ITEM_COUNT) spawnItem(state, random);
 
   state.tick++;
 
-  // 7. 无尽模式：对局永不结束。死掉的蛇保持 dead 状态等玩家选择
-  //    （重生走 respawnSnake 指令，退出走房间 leave），这里不做自动重生。
+  // ⑦ 模式结算
   if (variant === 'endless') {
+    // 无尽模式对局永不结束：死掉的蛇保持 dead，等玩家选择重生 / 退出
     return { died, ate, respawned: [], over: false };
   }
 
-  // 8. 团队模式：一支队伍全员出局即淘汰；只剩一支队伍时该队获胜。
-  //    队伍总积分用于同分时的决胜与"全灭"场景。
-  const remain = state.snakes.filter(s => s.alive);
   const teams = new Set(state.snakes.map(s => s.team).filter(Boolean));
   if (teams.size > 0) {
     state.teamScores = teamScores(state);
-    const aliveTeams = new Set(remain.map(s => s.team).filter(Boolean));
-    // 同一队的最后一条蛇倒了，这队就出局
-    if (aliveTeams.size <= 1) {
+    const aliveTeams = new Set(state.snakes.filter(s => s.alive).map(s => s.team).filter(Boolean));
+    // 提前结束：只剩一队存活 → 该队胜
+    if (aliveTeams.size === 1) {
       state.status = 'over';
-      const champion = [...aliveTeams][0] || '';
-      state.winner = champion ? championPlayerOf(state, champion) : '';
-      over = true;
-      return { died, ate, respawned: [], over };
+      const champion = [...aliveTeams][0] as string;
+      state.winner = championPlayerOf(state, champion);
+      return { died, ate, respawned: [], over: true };
     }
-    return { died, ate, respawned: [], over };
+    // 全灭 或 时间到：按团队总分判胜（同分比各队最高单蛇，再同分平局）
+    const timeUp = state.endsAt > 0 && now >= state.endsAt;
+    if (aliveTeams.size === 0 || timeUp) {
+      state.status = 'over';
+      const champion = bestTeam(state);
+      state.winner = champion ? championPlayerOf(state, champion) : '';
+      return { died, ate, respawned: [], over: true };
+    }
+    return { died, ate, respawned: [], over: false };
   }
 
-  // 9. 无队伍模式（兼容旧对局）：只剩一条蛇 → 它赢；全灭 → 分数最高者，同分平局
+  // 无队伍兼容：只剩一条蛇 → 它赢；全灭 → 分数最高者，同分平局
+  const remain = state.snakes.filter(s => s.alive);
   if (remain.length === 1) {
     state.status = 'over';
     state.winner = remain[0].id;
@@ -841,6 +945,45 @@ export function stepSnake(
 
   return { died, ate, respawned: [], over };
 }
+
+/** 统计某类可拾取物数量 */
+function countKind(state: SnakeState, kind: number): number {
+  let n = 0;
+  for (const f of state.food) if (f.k === kind) n++;
+  return n;
+}
+
+/** 按条件统计可拾取物数量（道具用） */
+function countKinds(state: SnakeState, pred: (kind: number) => boolean): number {
+  let n = 0;
+  for (const f of state.food) if (pred(f.k)) n++;
+  return n;
+}
+
+/** 团队总分最高的队；同分比各队最高单蛇，再同分返回 ''（平局） */
+function bestTeam(state: SnakeState): string {
+  const scores = state.teamScores || teamScores(state);
+  const best = new Map<string, number>();
+  for (const s of state.snakes) {
+    if (!s.team) continue;
+    best.set(s.team, Math.max(best.get(s.team) || 0, Math.max(s.score || 0, s.best || 0)));
+  }
+  let win = '';
+  let winScore = -1;
+  let winBest = -1;
+  for (const [team, score] of Object.entries(scores)) {
+    const peak = best.get(team) || 0;
+    if (score > winScore || (score === winScore && peak > winBest)) {
+      win = team;
+      winScore = score;
+      winBest = peak;
+    }
+  }
+  // 总分与最高单蛇都比不出来 → 平局
+  const rivals = Object.entries(scores).filter(([t, v]) => t !== win && v === winScore && (best.get(t) || 0) === winBest);
+  return rivals.length ? '' : win;
+}
+
 
 /** 队伍总积分：队内所有成员的最高分之和 */
 export function teamScores(state: SnakeState): Record<string, number> {

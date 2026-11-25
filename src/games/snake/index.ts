@@ -12,9 +12,10 @@ import { SNAKE_TEAM_NAMES, SNAKE_TEAM_SIZE } from "./teams";
  *   一支队伍全员出局即淘汰，只剩一队时该队获胜，分榜 key = team。
  *
  * 客户端只发三类指令（连续像素移动，没有格子/四方向）：
- * - movement.angle：期望朝向（弧度，0 = 向右）；服务端按"最小转弯半径 26px"推导的最大角速度追过去，
+ * - movement.angle：期望朝向（弧度，0 = 向右）；服务端按"最小转弯半径 34px"推导的最大角速度追过去，
  *   所以任意方向都能实时转向，也能贴着极小的圈盘旋（不会原地自转）
- * - movement.boost：加速（3s 内速度 x1.85，冷却 60s，服务端校验）
+ * - movement.boostHeld：按住加速（×1.85、每秒扣 18px 身长、下限 120px，**无冷却**）；
+ *   旧的 movement.boost 作为兼容别名保留，两者同时传时以 boostHeld 为准
  * - movement.respawn：无尽模式死亡后重生（死亡时那次得分已经记入排行榜）
  * 指令一律 silent，由运行时统一广播快照，避免 handler 再回播一次。
  * 分数同步不在此通道：客户端点离开/关闭发 `room:sync-score`（RoomHandler 按房间取运行时分数记榜）。
@@ -85,7 +86,7 @@ export default class GameSnake {
 
   static async excuteMove(
     match: IMatch,
-    movement: { player_id: string; angle?: number; boost?: boolean; respawn?: boolean },
+    movement: { player_id: string; angle?: number; boost?: boolean; boostHeld?: boolean; respawn?: boolean },
   ) {
     const { player_id } = movement;
     // 准入判定以服务端运行时为准（唯一权威）：
@@ -105,9 +106,12 @@ export default class GameSnake {
       return { success: ok, gameover: false, data: { silent: true } };
     }
 
-    // 加速：服务端校验冷却，成功后立刻广播一次（按钮反馈不用等下一个 tick）
-    if (movement.boost) {
-      const ok = snakeRuntimeService.boost(match._id, player_id);
+    // 加速：按住状态（true=按下、false=松开），无 CD，代价是扣身长
+    const held = typeof movement.boostHeld === 'boolean'
+      ? movement.boostHeld
+      : (typeof movement.boost === 'boolean' ? movement.boost : null);
+    if (held !== null) {
+      const ok = snakeRuntimeService.setBoost(match._id, player_id, held);
       return { success: ok, gameover: false, data: { silent: true } };
     }
 

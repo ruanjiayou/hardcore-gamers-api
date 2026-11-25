@@ -209,6 +209,26 @@ export function resolveLeaveAction(room: PolicyRoom, player_id: string): LeaveDe
 
 // ========== 遗留数据清理判定（纯函数，供服务启动自愈与单测共用） ==========
 
+/**
+ * 人机异常掉线后要不要把它从房间里摘掉。
+ *
+ * 背景：人机进程崩溃（典型事故：服务端快照改增量协议后，线上 robot 跑的还是旧代码，
+ * 直读 `state.food` 抛 TypeError → 整个 robot 进程退出）时，它来不及发
+ * `lobby:leave-room`，房间里会留下一条没人操控的僵尸蛇，账号也一直被占着。
+ *
+ * 只有人机走这条清理路径：
+ * - 真人掉线只是掉线，位置留着（回来还能接着玩）；
+ * - 不是房间成员（比如重连时房间已被解散）没什么可清的。
+ */
+export function shouldCleanupRobotOnDisconnect(
+  room: Pick<PolicyRoom, 'members'> | null | undefined,
+  player_id: string,
+): boolean {
+  const member = (room?.members || []).find(m => m._id === player_id)
+  if (!member) return false
+  return member.player_type === constant.PLAYER.TYPE.robot
+}
+
 export interface CleanupRoom {
   _id?: string
   status?: string

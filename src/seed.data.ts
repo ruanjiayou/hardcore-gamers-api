@@ -5,8 +5,11 @@
  */
 
 import { GameGenre, PlayerType, PlayerState, RoomStatus } from './constant';
-import type { IGame, IRoom, IVoicePack } from './types';
+import type { IAsset, IAssetPack, IGame, IRoom } from './types';
 import { snakeTeamRoles, snakeTeamSeats } from './games/snake/teams';
+
+/** 种子时间戳固定，避免每次启动 `new Date()` 导致 diff/revision 抖动 */
+export const SEED_TIME = new Date('2026-01-01T00:00:00.000Z');
 
 export const SEED_GAMES: IGame[] = [
   {
@@ -231,6 +234,8 @@ export interface SeedRobot {
   user_name: string;
   game_id: string;
   slug: string;
+  /** 人机难度（easy/normal/hard/master），缺省 normal；后台可改 */
+  difficulty?: string;
 }
 
 export const SEED_ROBOTS: SeedRobot[] = [
@@ -238,9 +243,10 @@ export const SEED_ROBOTS: SeedRobot[] = [
   { user_id: 'robot-user-xiangqi', player_id: 'robot-player-xiangqi', user_name: '象棋大师', game_id: 'xiangqi', slug: 'xiangqi' },
   { user_id: 'robot-user-othello', player_id: 'robot-player-othello', user_name: '黑白棋大师', game_id: 'othello', slug: 'othello' },
   { user_id: 'robot-user-chess', player_id: 'robot-player-chess', user_name: '国际象棋大师', game_id: 'chess', slug: 'chess' },
-  // 贪吃蛇 5 个人机：沿用最早的 robot-player-snake（避免留下孤儿账号），其余顺延
+  // 贪吃蛇人机：官方无尽桌 4 张 × 每桌 2 个 = 8 个账号（多备 1 个容错）。
+  // 沿用最早的 robot-player-snake（避免留下孤儿账号），其余顺延。
   { user_id: 'robot-user-snake', player_id: 'robot-player-snake', user_name: '贪吃蛇 1 号', game_id: 'snake', slug: 'snake' },
-  ...[2, 3, 4, 5].map(i => ({
+  ...[2, 3, 4, 5, 6, 7, 8, 9].map(i => ({
     user_id: `robot-user-snake-${i}`,
     player_id: `robot-player-snake-${i}`,
     user_name: `贪吃蛇 ${i} 号`,
@@ -261,8 +267,8 @@ export function stripRobotEmoji(name?: string | null): string {
   return String(name ?? '').replace(/^\s*🤖\s*/u, '');
 }
 
-/** 官方无尽房要配的人机数量 */
-export const SNAKE_ENDLESS_BOT_COUNT = 5;
+/** 官方无尽房每桌要配的人机数量 */
+export const SNAKE_ENDLESS_BOT_COUNT = 2;
 
 /** 机器人玩家的初始状态，供 seed 与回收逻辑共用 */
 export function robotPlayerSeed(robot: SeedRobot) {
@@ -276,6 +282,8 @@ export function robotPlayerSeed(robot: SeedRobot) {
     title: 'AI',
     type: PlayerType.robot,
     level: 5,
+    // 人机难度默认普通（GM-snake-28），运营可在后台按人机逐个调整
+    difficulty: robot.difficulty || 'normal',
     score: 0,
     exp: 0,
     status: 1,
@@ -289,78 +297,109 @@ export function robotPlayerSeed(robot: SeedRobot) {
 }
 
 /**
- * 语音包种子：配置只引用音频文件 URL，文件自托管在 server/public/audio/ 下，
- * 前端按 URL 加载播放。素材均为 OpenGameArt CC0（可商用、无需署名）。
- * - 目录约定：audio/<包>/common/ 放通用 BGM 与 click/win/lose；
- *   audio/<包>/<gameId>/{move,collect}.mp3 是该游戏专属操作音。
- * - 每套语音包在 7 个游戏上各有不同的 move/collect 音效，由下方 games 字段配置。
- * - classic：默认包，所有玩家（含游客）可用
- * - ambient / arcade：需权限，权限位在 users.voicePackPerm 或 etcd voice_pack_allowlist
+ * 资源种子：**只用于首次部署灌库**，之后管理端说了算（`seedAssets` 有一次性标记，重启不回写）。
+ *
+ * 数据切成「包」+「一行一条资源」：
+ * - `SEED_ASSET_PACKS`：包元信息（名字/是否默认/是否需要权限）
+ * - `SEED_ASSETS`：资源明细，`pack × game × group × key` 唯一
+ *
+ * 组约定（可扩展，加一种资源只需加一行）：
+ * | group | kind  | key | 说明 |
+ * |---|---|---|---|
+ * | `bgm`   | audio | `main` / 任意 | 背景音乐，同一游戏可多首 |
+ * | `sfx`   | audio | `click`/`move`/`collect`/`win`/`lose` | 音效，游戏级覆盖通用级 |
+ * | `food`  | image | `small`/`mid`/`big` | 普通食物三档 |
+ * | `items` | image | 道具注册表 key（`magnet`/`star`） | 拾取道具 |
+ * | `snake` | image | 任意（`default` 必有） | 蛇皮肤，玩家级选择 |
  */
-export const SEED_VOICE_PACKS: IVoicePack[] = [
+export const SEED_ASSET_PACKS: IAssetPack[] = [
   {
-    _id: 'classic',
-    name: '经典',
-    desc: '轻快的默认音效，七个游戏各有专属操作音',
-    cover: '🎵',
-    isDefault: true,
-    requirePermission: false,
-    bgm: [{ url: '/audio/classic/common/bgm.mp3', label: '经典主题' }],
-    sfx: {
-      click: '/audio/classic/common/click.mp3',
-      win: '/audio/classic/common/win.mp3',
-      lose: '/audio/classic/common/lose.mp3',
-    },
-    status: 1,
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    _id: 'classic', name: '经典', desc: '轻快的默认音效，七个游戏各有专属操作音',
+    cover: '🎵', isDefault: true, requirePermission: false, status: 1,
+    createdAt: SEED_TIME, updatedAt: SEED_TIME,
   },
   {
-    _id: 'ambient',
-    name: '深空',
-    desc: '空灵的环境氛围，七个游戏各有柔和提示音',
-    cover: '🌌',
-    isDefault: false,
-    requirePermission: true,
-    bgm: [
-      { url: '/audio/ambient/common/bgm.mp3', label: '星域' },
-      { url: '/audio/ambient/common/bgm2.mp3', label: '漂浮' },
-    ],
-    sfx: {
-      click: '/audio/ambient/common/click.mp3',
-      win: '/audio/ambient/common/win.mp3',
-      lose: '/audio/ambient/common/lose.mp3',
-    },
-    status: 1,
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    _id: 'ambient', name: '深空', desc: '空灵的环境氛围，七个游戏各有柔和提示音',
+    cover: '🌌', isDefault: false, requirePermission: true, status: 1,
+    createdAt: SEED_TIME, updatedAt: SEED_TIME,
   },
   {
-    _id: 'arcade',
-    name: '街机',
-    desc: '明快的电子节奏，七个游戏各有清脆操作音',
-    cover: '🕹️',
-    isDefault: false,
-    requirePermission: true,
-    bgm: [{ url: '/audio/arcade/common/bgm.mp3', label: '霓虹' }],
-    sfx: {
-      click: '/audio/arcade/common/click.mp3',
-      win: '/audio/arcade/common/win.mp3',
-      lose: '/audio/arcade/common/lose.mp3',
-    },
-    status: 1,
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    _id: 'arcade', name: '街机', desc: '明快的电子节奏，带霓虹皮肤素材',
+    cover: '🕹️', isDefault: false, requirePermission: true, status: 1,
+    createdAt: SEED_TIME, updatedAt: SEED_TIME,
   },
 ];
 
-/** 每个包的 7 个游戏各自的操作音；sfx 按 key 覆盖包级通用配置 */
+/** 包级 BGM：文件是历史路径，别按 key 拼文件名（ambient 的第二首叫 bgm2.mp3） */
+const PACK_BGM: Record<string, { key: string; label: string; file: string }[]> = {
+  classic: [{ key: 'main', label: '经典主题', file: 'bgm.mp3' }],
+  ambient: [
+    { key: 'main', label: '星域', file: 'bgm.mp3' },
+    { key: 'secondary', label: '漂浮', file: 'bgm2.mp3' },
+  ],
+  arcade: [{ key: 'main', label: '霓虹', file: 'bgm.mp3' }],
+};
+/** 包级通用音效（房间/大厅层面） */
+const COMMON_SFX = ['click', 'win', 'lose'];
+/** 游戏级音效：按 key 覆盖包级通用配置 */
+const GAME_SFX = ['move', 'collect'];
 const AUDIO_GAME_IDS = ['gomoku', 'xiangqi', 'othello', 'chess', '2048', 'tetris', 'snake'];
-for (const pack of SEED_VOICE_PACKS) {
-  pack.games = Object.fromEntries(AUDIO_GAME_IDS.map(game => [game, {
-    sfx: {
-      move: `/audio/${pack._id}/${game}/move.mp3`,
-      collect: `/audio/${pack._id}/${game}/collect.mp3`,
-    },
-  }]));
+
+/** 街机主题的贪吃蛇素材（其余主题不带图 → 客户端回退矢量绘制） */
+const ARCADE_SNAKE_IMAGES: { group: string; key: string; label: string; file: string }[] = [
+  { group: 'food', key: 'small', label: '小果', file: 'food/small.svg' },
+  { group: 'food', key: 'mid', label: '中果', file: 'food/mid.svg' },
+  { group: 'food', key: 'big', label: '大果', file: 'food/big.svg' },
+  { group: 'items', key: 'magnet', label: '磁铁', file: 'items/magnet.svg' },
+  { group: 'items', key: 'star', label: '星星', file: 'items/star.svg' },
+  { group: 'snake', key: 'default', label: '斜纹', file: 'snake/default.svg' },
+  { group: 'snake', key: 'neon', label: '霓虹点', file: 'snake/neon.svg' },
+  { group: 'snake', key: 'candy', label: '糖果', file: 'snake/candy.svg' },
+];
+
+/** 生成一条资源；`_id` 是可读的确定性 id（种子重复运行不会变，引用它的 player/match 不会悬空） */
+function seedAsset(
+  pack: string,
+  game: string,
+  group: string,
+  key: string,
+  url: string,
+  label: string,
+  order = 0,
+  free = true,
+): IAsset {
+  return {
+    _id: `${pack}_${game || 'common'}_${group}_${key}`,
+    pack,
+    game,
+    group,
+    key,
+    label,
+    kind: group === 'bgm' || group === 'sfx' ? 'audio' : 'image',
+    url,
+    meta: {},
+    free,
+    status: 1,
+    order,
+    createdAt: SEED_TIME,
+    updatedAt: SEED_TIME,
+  };
+}
+
+export const SEED_ASSETS: IAsset[] = [];
+for (const pack of SEED_ASSET_PACKS) {
+  for (const [i, bgm] of (PACK_BGM[pack._id] || []).entries()) {
+    SEED_ASSETS.push(seedAsset(pack._id, '', 'bgm', bgm.key, `/audio/${pack._id}/common/${bgm.file}`, bgm.label, i));
+  }
+  for (const [i, key] of COMMON_SFX.entries()) {
+    SEED_ASSETS.push(seedAsset(pack._id, '', 'sfx', key, `/audio/${pack._id}/common/${key}.mp3`, key, i));
+  }
+  for (const game of AUDIO_GAME_IDS) {
+    for (const [i, key] of GAME_SFX.entries()) {
+      SEED_ASSETS.push(seedAsset(pack._id, game, 'sfx', key, `/audio/${pack._id}/${game}/${key}.mp3`, key, i));
+    }
+  }
+}
+for (const [i, img] of ARCADE_SNAKE_IMAGES.entries()) {
+  SEED_ASSETS.push(seedAsset('arcade', 'snake', img.group, img.key, `/skins/arcade/snake/${img.file}`, img.label, i));
 }

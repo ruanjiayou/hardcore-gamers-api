@@ -18,6 +18,7 @@ import {
   normalizeOwner,
   pickTempOwner,
   resolveLeaveAction,
+  shouldCleanupRobotOnDisconnect,
   shouldTakeOwnership,
 } from '../utils/roomPolicy'
 import { snakeRuntimeService } from './SnakeRuntimeService';
@@ -140,6 +141,9 @@ export class RoomService {
           { _id: room_id, status: constant.ROOM.STATUS.playing },
           { $set: { status: constant.ROOM.STATUS.waiting, match_id: '', updatedAt: new Date() } },
         );
+        // 顺手把该房间的运行时停掉（SB-053）：对局已经不在了，运行时留着就是僵尸，
+        // 下一局开起来会变成两个运行时抢同一个广播频道。
+        snakeRuntimeService.stopByRoom(room_id);
         room.status = constant.ROOM.STATUS.waiting;
         room.match_id = '';
         console.log(`🧹 房间 ${room_id} 处于 playing 但无进行中的对局，已重置为等待`);
@@ -200,6 +204,11 @@ export class RoomService {
     if (room.settings?.variant !== 'endless') return { match_id: '', started: false };
     const players = (room.members || []).filter((m: any) => m.member_type === MemberType.player);
     if (!players.length) return { match_id: '', started: false };
+
+    // 建新局之前先把这个房间可能残留的旧运行时停掉（SB-053）：
+    // 房间回到等待态但旧运行时没停（异常路径）时，它会和新运行时同时往
+    // `room:<id>` 频道广播 → 客户端看到两个对局的画面交替刷新。
+    snakeRuntimeService.stopByRoom(room_id);
 
     const match_id = await this.startGame(room_id);
     if (!match_id) return { match_id: '', started: false };
@@ -390,6 +399,9 @@ export class RoomService {
     if (decision.reset) {
       // 无尽模式没人了：结束这一局并按各自最高分结算（房间已回等待态，幂等）
       if (liveMatch) await snakeRuntimeService.stopAndFinish(liveMatch);
+      // 兜底：liveMatch 为空（房间的 match_id 已经被清掉）时，按房间把运行时停干净，
+      // 否则旧运行时会变成僵尸继续广播，下一局开起来就变成两个运行时抢频道（SB-053）
+      else snakeRuntimeService.stopByRoom(room_id);
       const robotIds = room.members.filter(m => m.player_type === constant.PLAYER.TYPE.robot).map(m => m._id);
       if (robotIds.length) {
         // 复位机器人状态，使其可被其他房间重新占用
@@ -450,6 +462,44 @@ export class RoomService {
     }
     return { ok: true };
   }
+  /**
+   * 机器人异常掉线（进程崩溃 / 网络断开）后的清理。
+   *
+   * 与真人掉线不同：真人掉线只是掉线，位置还留着（回来还能接着玩）；
+   * 机器人掉了就是「这条蛇没人操控了」，必须把三处状态一起清干净：
+   * 1. 房间成员表里移除它 —— 否则房间人数虚高（显示 5 个人机，实际 0 条蛇），
+   *    而且 `ensureRoomBots` 会以为人机还在、不再补新的；
+   * 2. 运行时里摘掉它的蛇 —— 否则场上留一条「等待重生」的僵尸蛇挡着别人的路；
+   * 3. 释放 player 占位（state 回 online）—— 否则机器人账号被永久占用，
+   *    池子里的可用账号越来越少，最后「暂无空闲机器人」。
+   *
+   * 注意：这里**不**调 robot 服务的 /rem-robot。进程崩溃时那个服务可能已经死了，
+   * 调了也白调；而且它是靠 sqlite 恢复的，服务起来会自己把 bot 拉回来。
+   */
+  async handleRobotDisconnect(room_id: string, player_id: string): Promise<boolean> {
+    const room = await MRoom.findById(room_id).lean(true);
+    if (!room) return false;
+    // 只有机器人走这条路径，真人掉线保持原样（回来还能续上）
+    if (!shouldCleanupRobotOnDisconnect(room as any, player_id)) return false;
+
+    // 1. 房间成员表移除
+    await MRoom.updateOne(
+      { _id: room_id },
+      { $pull: { members: { _id: player_id } } } as any,
+    );
+    // 2. 运行时摘掉这条蛇（顺带把分数记榜）
+    if (room.match_id) {
+      snakeRuntimeService.removePlayer(room.match_id, player_id);
+    }
+    // 3. 释放账号占位
+    await MPlayer.updateOne(
+      { _id: player_id },
+      { $set: { room_id: '', state: constant.PLAYER.STATE.online } },
+    );
+    console.log(`🤖 人机 ${player_id} 异常掉线，已从房间 ${room_id} 清理并释放占位`);
+    return true;
+  }
+
   /** 转让房主：仅私有房主可转让，目标必须是房内的非人机对战玩家（SB-039） */
   async transferOwner(room_id: string, player_id: string, by?: string): Promise<{ ok: boolean; reason?: string }> {
     const room = await MRoom.findById(room_id).lean(true);
@@ -628,6 +678,13 @@ export class RoomService {
           updatedAt: new Date(),
         }
       });
+    // 房间回到等待态后必须把该房间的运行时停掉（SB-053）：
+    // 运行时是按 match_id 存内存的，房间换对局后旧运行时会变成"僵尸"——
+    // 还在 tick、还在往同一个 socket 频道广播快照；下一次进房再开一局就变成
+    // 两个运行时抢同一个频道，客户端看到的是两个对局的画面交替刷新
+    // （自己那条蛇时有时无 →「已出局」提示每 50ms 闪一次）。
+    // 正常结束对局时运行时已经被自己删掉了，这里是 no-op。
+    snakeRuntimeService.stopByRoom(room_id);
     // 平局：没有任何胜者、也没有显式分数表（单人游戏带 scores，不算平局）
     const isDraw = winnerIds.size === 0 && !scores;
     await MPlayer.bulkWrite(room.members.map(m => {

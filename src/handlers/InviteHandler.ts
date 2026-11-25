@@ -144,7 +144,7 @@ export function setupInviteHandlers(io: Server, socket: AuthSocket, user_id: str
       const arena = await roomService.ensureSnakeArena(room._id);
       if (arena.match_id) {
         if (room.status === constant.ROOM.STATUS.playing) {
-          await snakeRuntimeService.addPlayer(arena.match_id, player._id, (player as any).nickname);
+          await snakeRuntimeService.addPlayer(arena.match_id, player._id, (player as any).nickname, (player as any).skin);
         }
         io.to(`room:${room._id}`).emit('room:game-start', { room_id: room._id, match_id: arena.match_id, timestamp: Date.now() });
       }

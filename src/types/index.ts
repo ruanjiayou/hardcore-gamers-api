@@ -114,14 +114,47 @@ export interface IUser {
   updatedAt: Date;
 }
 
-/** 单个游戏在一套语音包里的音频配置；未配置的键回退到包级通用配置 */
-export interface IGameAudio {
-  bgm?: { url: string; label?: string }[];
-  sfx?: Record<string, string>;
+/**
+ * 资源系统（`assets` 一行一条，`asset_packs` 是分组容器）。
+ *
+ * 为什么不是「一个包一个大对象」：不同类型的资源字段根本不同——
+ * 背景音乐要循环/时长，音效要 key（move/collect/click），
+ * 食物按档位（small/mid/big），道具按注册表 key，蛇皮肤还带画风/尺寸。
+ * 塞进一个 Mixed 里就只能靠约定，改一处全得动。拆成行之后：
+ * - 加一种资源 = 加一行（`group` 自定义），不用改表结构；
+ * - 改一张图 = 改一行，不会覆盖同包其他资源；
+ * - 权限/上下架是行级字段，能单独控制。
+ */
+export type AssetKind = 'audio' | 'image';
+/** 内置分组（`group` 是 string，这里只列约定好的，允许扩展 board/avatar 等） */
+export type AssetGroup = 'bgm' | 'sfx' | 'food' | 'items' | 'snake';
+
+/** 一条资源：资源包 × 游戏 × 分组 × key 唯一 */
+export interface IAsset {
+  _id: string;
+  /** 所属资源包（`asset_packs._id`） */
+  pack: string;
+  /** 所属游戏 slug；`''` 表示全游戏通用（click/win/lose 这类） */
+  game: string;
+  /** 分组：bgm / sfx / food / items / snake / 以后任意扩展 */
+  group: string;
+  /** 组内唯一 key：move、small、magnet、neon…… */
+  key: string;
+  label: string;
+  kind: AssetKind;
+  url: string;
+  /** 组专属字段：音频时长/循环、皮肤色调与尺寸等，不参与查询 */
+  meta?: Record<string, unknown>;
+  /** 免授权：默认包资源与基础资源，所有玩家可用 */
+  free: boolean;
+  status: number; // 1 上架 0 下架
+  order: number;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
-/** 语音包：一份配置引用若干音频文件 URL，由前端按 URL 加载播放 */
-export interface IVoicePack {
+/** 资源包元信息：只描述包本身，资源明细在 `assets` */
+export interface IAssetPack {
   _id: string;
   name: string;
   desc: string;
@@ -130,15 +163,22 @@ export interface IVoicePack {
   isDefault: boolean;
   /** 需要权限：无权限玩家只能用默认包 */
   requirePermission: boolean;
-  /** 包级通用背景音乐（游戏未单独配置时使用），可多首循环播放 */
-  bgm: { url: string; label?: string }[];
-  /** 包级通用音效：click/win/lose 等；游戏未单独配置时使用 */
-  sfx: Record<string, string>;
-  /** 按游戏区分的音频：key 为 game_id / slug，例如 gomoku、xiangqi、2048 */
-  games?: Record<string, IGameAudio>;
-  status: number; // 1 启用
+  status: number; // 1 启用 0 下架
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * 玩家持有的资源（授权关联）。
+ * 不是所有资源都默认对玩家开放：收费皮肤、活动限定等要先「授予」。
+ * 判定顺序：资源 `free` → 直接可用；否则看本表有没有 (player_id, asset_id) 记录。
+ */
+export interface IPlayerAsset {
+  player_id: string;
+  asset_id: string;
+  /** free：随免费资源自动写入；grant：后台手动授予 */
+  source: 'free' | 'grant';
+  createdAt: Date;
 }
 /**
  * 房间座位块（rooms.seats）。
@@ -173,6 +213,10 @@ export interface IPlayer {
   atline: boolean;
   status: number; // 1 normal 2 muted 3 banned
   state: string;
+  /** 人机难度（easy/normal/hard/master）；空视为 normal，只对人机生效 */
+  difficulty?: string;
+  /** 玩家装备的蛇皮肤（`assets._id`，group=snake）；空 = 用默认皮肤 */
+  skin?: string;
   createdAt: Date;
   updatedAt: Date;
 }

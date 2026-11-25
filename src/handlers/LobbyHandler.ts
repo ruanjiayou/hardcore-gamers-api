@@ -163,7 +163,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       // 无尽挑战（官方竞技房）：进房即开局；已在局中的直接把自己那条蛇加进去
       if (room.settings?.variant === 'endless') {
         const isPlayer = data.type === constant.MEMBER.TYPE.player;
-        if (isPlayer) await enterEndlessArena(room, player._id, player.nickname);
+        if (isPlayer) await enterEndlessArena(room, player._id, player.nickname, (player as any).skin);
       }
     } catch (error) {
       cb(false, '加入房间失败');
@@ -260,7 +260,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       cb(true, { ...member, room_id: room._id });
       io.to(`room:${room._id}`).emit('room:player-joined', member);
 
-      if (endlessArena) await enterEndlessArena(room, player._id, player.nickname);
+      if (endlessArena) await enterEndlessArena(room, player._id, player.nickname, (player as any).skin);
       console.log(`🎯 匹配成功: ${game.slug}/${variantKey} → ${room._id}（${room.official ? '官方桌' : '新桌'}）`);
     } catch (error) {
       console.log('❌ 匹配失败:', error);
@@ -274,7 +274,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
    *   （它会自愈幽灵状态、必要时重新开局、并在运行时丢失时按库里局面重建）；
    * - 已经在局中（有人先到了）：除了重建运行时，还要把新玩家那条蛇放进当前对局。
    */
-  async function enterEndlessArena(room: any, player_id: string, nickname?: string) {
+  async function enterEndlessArena(room: any, player_id: string, nickname?: string, skin?: string) {
     try {
       const before = await MRoom.findById(room._id, { status: 1 }).lean(true) as any;
       const arena = await roomService.ensureSnakeArena(room._id);
@@ -284,7 +284,7 @@ export function setupLobbyHandlers(io: Server, socket: AuthSocket, user_id: stri
       // 必须 await：addPlayer 会把加入者回写进 match.players，
       // 回写没落库前客户端发的转向指令会被判成"不在局中"而丢弃
       if (!arena.started && before?.status === constant.ROOM.STATUS.playing) {
-        await snakeRuntimeService.addPlayer(arena.match_id, player_id, nickname);
+        await snakeRuntimeService.addPlayer(arena.match_id, player_id, nickname, skin);
       }
       io.to(`room:${room._id}`).emit('room:game-start', { ...payload, match_id: arena.match_id });
     } catch (error) {
