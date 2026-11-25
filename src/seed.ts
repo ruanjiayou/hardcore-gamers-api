@@ -14,6 +14,7 @@ import config from './config';
 import redis from './utils/redis';
 import { SEED_ASSETS, SEED_ASSET_PACKS, SEED_GAMES, SEED_ROBOTS, robotPlayerSeed, officialRoomSeeds, stripRobotEmoji } from './seed.data';
 import { normalizeOwner } from './utils/roomPolicy';
+import type { IAsset } from './types';
 
 export { SEED_GAMES, SEED_ROBOTS, SEED_ASSET_PACKS, SEED_ASSETS };
 
@@ -77,48 +78,6 @@ export async function seedRobots(): Promise<SeedResult> {
     console.log(`🤖 机器人账号初始化：新增 ${inserted} 个，已存在 ${kept} 个`);
   }
   return { inserted, kept };
-}
-
-/**
- * 清洗存量人机昵称左侧的 🤖 前缀（UI-054）。
- *
- * 早期 seed / admin 会把机器人名字写成「🤖 贪吃蛇 1 号」，源头（seed.data / admin）
- * 现在不再拼前缀，但库里已落库的 users.name / users.nickname / players.nickname 还带着。
- * 这里做一次性数据迁移，幂等，跑第二遍没有匹配就什么都不做。
- *
- * 实现注意：**不能用 /🤖/ 这种正则去查库**。JS 在非 unicode 模式下会把 emoji 的
- * 代理对写成 `\ud83e\udd16`，MongoDB 的 PCRE 不认识 `\u` 转义，整个 seed 流程会直接抛错
- * （进而 voice_packs / 官方房等后续种子全部跳过）。改成「先捞人机 player，再按 _id 捞 user」，
- * 纯 ID 查询，既不扫全表也不碰正则。
- */
-export async function cleanRobotEmoji(): Promise<SeedResult> {
-  let changed = 0;
-  const robots = await MPlayer.find({ type: 'robot' }, { user_id: 1, nickname: 1 }).lean(true) as any[];
-  const userIds = [...new Set(robots.map(r => r.user_id).filter(Boolean))];
-  const users = userIds.length
-    ? await MUser.find({ _id: { $in: userIds } }, { name: 1, nickname: 1 }).lean(true) as any[]
-    : [];
-  for (const u of users) {
-    const patch: Record<string, unknown> = {};
-    if (u.name && stripRobotEmoji(u.name) !== u.name) patch.name = stripRobotEmoji(u.name);
-    if (u.nickname && stripRobotEmoji(u.nickname) !== u.nickname) patch.nickname = stripRobotEmoji(u.nickname);
-    if (!Object.keys(patch).length) continue;
-    patch.updatedAt = new Date();
-    await MUser.updateOne({ _id: u._id }, { $set: patch });
-    changed++;
-  }
-  for (const p of robots) {
-    if (!p.nickname || stripRobotEmoji(p.nickname) === p.nickname) continue;
-    await MPlayer.updateOne(
-      { _id: p._id },
-      { $set: { nickname: stripRobotEmoji(p.nickname), updatedAt: new Date() } },
-    );
-    changed++;
-  }
-  if (changed > 0) {
-    console.log(`🧹 人机昵称清洗：去掉 🤖 前缀 ${changed} 条`);
-  }
-  return { inserted: changed, kept: 0 };
 }
 
 /**
@@ -226,13 +185,74 @@ export async function seedAssets(): Promise<SeedResult> {
   return { inserted, kept: 0 };
 }
 
+/**
+ * 一次性结构迁移的标记：资源从「包级共用」改成「按游戏各配一份」。
+ * 与 `ASSETS_SEED_KEY` 分开：灌种子和改结构是两件事，各自有各的一次性标记。
+ */
+const ASSETS_GAME_SCOPE_KEY = 'assets_game_scope_v1';
+
+/**
+ * 一次性结构迁移：把「全游戏共用一份 BGM」改成「每个游戏各配一份 BGM」。
+ *
+ * 只做两件事，不覆盖运营改过的内容：
+ * 1. 包级 BGM（`game=''`）按游戏复制成游戏级 BGM 行（URL 沿用原文件，
+ *    后台想给某个游戏换曲子，单独改那一行即可）；
+ * 2. 历史蛇皮肤行补上 `equippable=true`（玩家级可装备外观的标记）。
+ *
+ * 音效本来就是游戏级的、图片本来就是游戏级的，都不用动。
+ * 跑过一次就写标记，之后永不重跑（避免把运营新配的包级 BGM 又复制一遍）。
+ */
+export async function migrateAssetsToGameScope(): Promise<{ bgmRows: number; marked: number }> {
+  const marker = await MMeta.findById(ASSETS_GAME_SCOPE_KEY).lean(true);
+  if (marker) return { bgmRows: 0, marked: 0 };
+
+  const games = await MGame.find({}, { slug: 1 }).lean(true) as any[];
+  const slugs = [...new Set(games.map(g => g?.slug).filter(Boolean))] as string[];
+
+  let bgmRows = 0;
+  const genericBgm = await MAsset.find({ game: '', group: 'bgm' }).lean(true) as IAsset[];
+  for (const row of genericBgm) {
+    for (const slug of slugs) {
+      const res = await MAsset.updateOne(
+        { pack: row.pack, game: slug, group: 'bgm', key: row.key },
+        {
+          $setOnInsert: {
+            ...row,
+            _id: `${row.pack}_${slug}_bgm_${row.key}`,
+            game: slug,
+            equippable: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        },
+        { upsert: true },
+      );
+      if (res.upsertedCount) bgmRows++;
+    }
+  }
+  // 包级 BGM 删掉：留着的话它会盖住游戏级那一行（合并时后写入的赢）
+  if (genericBgm.length) await MAsset.deleteMany({ game: '', group: 'bgm' });
+
+  // 历史蛇皮肤 → 玩家级可装备
+  const marked = await MAsset.updateMany({ group: 'snake', kind: 'image' }, { $set: { equippable: true } });
+
+  await MMeta.updateOne(
+    { _id: ASSETS_GAME_SCOPE_KEY },
+    { $set: { value: { bgmRows, marked: marked.modifiedCount, at: new Date() }, updatedAt: new Date() } },
+    { upsert: true },
+  );
+  await redis.del(config.prefix + 'asset-packs').catch(() => 0);
+  console.log(`🎨 资源按游戏拆分（一次性迁移）：BGM ${bgmRows} 行 / 标记可装备外观 ${marked.modifiedCount} 行`);
+  return { bgmRows, marked: marked.modifiedCount };
+}
+
 /** 服务启动时统一初始化 */
 export async function seedAll() {
   await seedGames();
   await seedRobots();
-  await cleanRobotEmoji();
   await seedOfficialRooms();
   await seedAssets();
+  await migrateAssetsToGameScope();
 }
 
 // 支持作为脚本单独运行：bun run seed（server 目录下）

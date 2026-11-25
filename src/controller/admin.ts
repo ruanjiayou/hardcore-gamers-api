@@ -370,6 +370,8 @@ function normalizeAsset(body: any, existing?: any) {
     kind,
     url,
     meta: body.meta !== undefined ? body.meta : (existing?.meta || {}),
+    // 玩家级可装备外观：勾了才能在设置里装备（存 players.skin）
+    equippable: body.equippable !== undefined ? body.equippable === true : (existing?.equippable === true),
     free: body.free !== undefined ? body.free === true : (existing?.free === true),
     status: body.status !== undefined ? (Number(body.status) ? 1 : 0) : (existing?.status ?? 1),
     order: body.order !== undefined ? Number(body.order) || 0 : (existing?.order ?? 0),

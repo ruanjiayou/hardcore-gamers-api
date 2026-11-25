@@ -34,7 +34,8 @@ import {
   SNAKE_PATH_STEP,
   SNAKE_RADIUS,
   SNAKE_SEG_SPACING,
-  SNAKE_SPEED,
+  SNAKE_SPEED_MAX,
+  SNAKE_SPEED_MIN,
   SNAKE_TEAM_MATCH_MS,
   SNAKE_WORLD_H,
   SNAKE_WORLD_W,
@@ -42,8 +43,11 @@ import {
   normalizeAngle,
   respawnSnake,
   setBoost,
+  snakeCruiseSpeed,
+  snakeMoveSpeed,
   snakeScores,
   snakeSpine,
+  snakeTurnRate,
   spawnFood,
   spawnItem,
   stepSnake,
@@ -189,12 +193,13 @@ describe('贪吃蛇规则（规格 §12 验收用例）', () => {
   });
 
   // ---------- 1 直行 ----------
-  test('用例 1：单蛇直行 3s 前进 510px、不死', () => {
+  test('用例 1：单蛇直行 3s 前进 330px、不死', () => {
     const a = straight('p1', 500, 500);
     const state = makeState([a], [], { variant: 'endless' });
     for (let i = 0; i < 60; i++) stepSnake(state, { dt: STEP, now: now + i * 50 });
     expect(a.alive).toBe(true);
-    expect(a.x - 500).toBeCloseTo(SNAKE_SPEED * 3, 1);
+    // 初始身长 = SNAKE_BODY_LENGTH → 巡航速度取上限
+    expect(a.x - 500).toBeCloseTo(snakeCruiseSpeed(SNAKE_BODY_LENGTH) * 3, 1);
   });
 
   // ---------- 2 自撞 ----------
@@ -345,27 +350,52 @@ describe('贪吃蛇规则（规格 §12 验收用例）', () => {
   });
 
   // ---------- 13/14 加速 ----------
-  test('用例 13：按住加速 1s → 速度 314.5，长度扣 18px，松开立即恢复', () => {
+  test('用例 13：按住加速 1s → 速度按倍率提升、长度扣 18px，松开立即恢复', () => {
     const a = straight('p1', 500, 700, 400);
     const state = makeState([a], [], { variant: 'endless' });
     expect(setBoost(state, 'p1', true)).toBe(true);
     for (let i = 0; i < 20; i++) stepSnake(state, { dt: STEP, now: now + i * 50 });
-    expect(a.x - 500).toBeCloseTo(SNAKE_SPEED * SNAKE_BOOST_MULT * 1, 1);
+    // 加速期间按当前身长的巡航速度 × 倍率前进（身长同时在扣，取 1s 内的均值身长）
+    const meanLen = (400 + a.length) / 2;
+    expect(a.x - 500).toBeCloseTo(snakeMoveSpeed(meanLen, true), 0);
     expect(400 - a.length).toBeCloseTo(SNAKE_BOOST_DRAIN * 1, 1);
 
     const before = a.x;
     setBoost(state, 'p1', false);
     stepSnake(state, { dt: STEP, now: now + 1000 });
-    expect(a.x - before).toBeCloseTo(SNAKE_SPEED * STEP, 1);
+    // 松开立刻回到巡航速度（按当前身长算）
+    expect(a.x - before).toBeCloseTo(snakeMoveSpeed(a.length, false) * STEP, 1);
   });
 
-  test('用例 14：长度 130 按住加速 → 扣到 120 自动停，不会更低', () => {
+  test('用例 14：长度 130 按住加速 → 扣到 120 停住，但「按住」状态保留（松手才停）', () => {
     const a = straight('p1', 500, 700, SNAKE_BOOST_MIN_LEN + 10);
     const state = makeState([a], [], { variant: 'endless' });
     setBoost(state, 'p1', true);
     for (let i = 0; i < 40; i++) stepSnake(state, { dt: STEP, now: now + i * 50 });
     expect(a.length).toBe(SNAKE_BOOST_MIN_LEN);
+    // 按住意图保留：玩家还按着就不清（吃到食物长回来后自动恢复加速）
+    expect(a.boostHeld).toBe(true);
+    // 松手才清
+    setBoost(state, 'p1', false);
     expect(a.boostHeld).toBe(false);
+  });
+
+  test('速度模型：巡航速度随身长线性递减，角速度 = 速度 / 转弯半径', () => {
+    // 身长 = 初始身长 → 速度上限；身长 = 上限 → 速度下限
+    expect(snakeCruiseSpeed(SNAKE_BODY_LENGTH)).toBeCloseTo(SNAKE_SPEED_MAX, 5);
+    expect(snakeCruiseSpeed(SNAKE_MAX_LENGTH)).toBeCloseTo(SNAKE_SPEED_MIN, 5);
+    // 单调递减
+    let prev = Infinity;
+    for (let len = SNAKE_BODY_LENGTH; len <= SNAKE_MAX_LENGTH; len += 100) {
+      const v = snakeCruiseSpeed(len);
+      expect(v).toBeLessThan(prev);
+      prev = v;
+    }
+    // 加速 = 巡航 × 倍率；角速度 = 速度 / 半径
+    expect(snakeMoveSpeed(800, true)).toBeCloseTo(snakeCruiseSpeed(800) * SNAKE_BOOST_MULT, 5);
+    expect(snakeTurnRate(800, false)).toBeCloseTo(snakeMoveSpeed(800, false) / SNAKE_MIN_TURN_RADIUS, 5);
+    // 长蛇更慢 → 角速度也更低（长蛇更难转向）
+    expect(snakeTurnRate(2000, false)).toBeLessThan(snakeTurnRate(SNAKE_BODY_LENGTH, false));
   });
 
   // ---------- 15/16 残骸 ----------

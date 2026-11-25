@@ -97,9 +97,16 @@ describe('资源包 · 音效按游戏各自独立', () => {
     }
   });
 
-  test('BGM 可以多首：ambient 配了两首，key 不同', () => {
-    expect(rowsOf('ambient', '', 'bgm').map(r => r.key)).toEqual(['main', 'secondary']);
-    expect(rowsOf('classic', '', 'bgm')).toHaveLength(1);
+  test('BGM 也是每个游戏各配一份，可以多首：ambient 配了两首，key 不同', () => {
+    // 通用层（game=''）没有 BGM —— 通用包只留 UI 通用音
+    for (const pack of SEED_ASSET_PACKS) {
+      expect(rowsOf(pack._id, '', 'bgm')).toHaveLength(0);
+    }
+    // 每个游戏都有自己的一行 BGM，ambient 还能配两首
+    for (const game of games) {
+      expect(rowsOf('ambient', game, 'bgm').map(r => r.key)).toEqual(['main', 'secondary']);
+      expect(rowsOf('classic', game, 'bgm')).toHaveLength(1);
+    }
   });
 
   test('街机主题带贪吃蛇的皮肤图，其余主题不带（客户端回退矢量）', () => {
@@ -110,6 +117,12 @@ describe('资源包 · 音效按游戏各自独立', () => {
       const images = SEED_ASSETS.filter((a: IAsset) => a.pack === pack && a.kind === 'image');
       expect(images).toHaveLength(0);
     }
+  });
+
+  test('只有蛇皮肤标了「玩家级可装备」，食物/道具是主题资源', () => {
+    const equippable = SEED_ASSETS.filter((a: IAsset) => a.equippable);
+    expect(new Set(equippable.map(a => a.group))).toEqual(new Set(['snake']));
+    expect(equippable.every(a => a.game === 'snake')).toBe(true);
   });
 
   test('资源 _id 确定且唯一：种子重复运行不会换 id（player/match 引用不会悬空）', () => {

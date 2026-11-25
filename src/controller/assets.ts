@@ -2,10 +2,11 @@
  * 资源 HTTP 接口（挂载在 /api/assets）。
  *
  * GET  /api/assets/manifest.json?game=snake[&pack=arcade]
- *   一次下发该游戏的全部资源：图片 URL、食物/道具索引、蛇皮肤选项、音频（BGM+音效）。
+ *   一次下发该游戏的全部资源：图片 URL、按分组的外观清单、音频（BGM+音效）。
+ *   **只含当前游戏的那一份**（外加 UI 通用音）——黑白棋拿不到贪吃蛇的皮肤或音效。
  *   前端在加载阶段预解码，对局内只按 asset_id 查内存，零图片请求。
- * GET  /api/assets/skins?game=snake[&pack=]   可选蛇皮肤（含 owned/equipped）
- * POST /api/assets/equip { game, asset_id }  装备蛇皮肤（需登录）
+ * GET  /api/assets/skins?game=snake[&pack=]   本游戏可装备的外观（含 owned/equipped）
+ * POST /api/assets/equip { game, asset_id }  装备外观（需登录）
  * POST /api/assets/skin  { skin: <id|key> }  旧接口兼容（内部解析成 asset_id）
  */
 import { Router } from 'express';
@@ -16,7 +17,7 @@ import { MAsset } from '../models';
 
 const router = Router();
 
-/** 把 `game` 参数规范化：缺省 snake（目前唯一有皮肤的游戏） */
+/** 把 `game` 参数规范化：缺省 snake（目前唯一有外观配置的游戏） */
 function gameOf(req: any): string {
   return String(req.query.game || 'snake');
 }
@@ -68,7 +69,9 @@ router.post('/skin', httpAuth, async (req: AuthedRequest, res) => {
     let assetId = raw;
     const byId = raw ? await MAsset.findById(raw, { _id: 1 }).lean(true) : null;
     if (!byId) {
-      const byKey = await MAsset.findOne({ group: 'snake', key: raw, status: { $ne: 0 } }, { _id: 1 })
+      // 按 key 找「玩家级可装备的外观」：不按分组名硬编码（以前写死 group='snake'，
+      // 换个游戏的皮肤就再也装备不了了）
+      const byKey = await MAsset.findOne({ equippable: true, key: raw, status: { $ne: 0 } }, { _id: 1 })
         .sort({ updatedAt: -1 }).lean(true);
       assetId = String((byKey as any)?._id || '');
     }

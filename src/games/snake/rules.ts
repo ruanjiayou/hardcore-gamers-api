@@ -144,34 +144,55 @@ export const SNAKE_TICK_MS = 50;
 export const SNAKE_RADIUS = 15;
 export const SNAKE_HEAD_RADIUS = 16;
 /**
- * 基础速度（像素每秒）：巡航速度。
- * 原本 170 偏快（贴脸躲闪来不及），下调到 125。
+ * 速度模型：**巡航速度随身长线性递减**（贪吃蛇大作战的核心手感）。
+ *
+ * 「刚出生的小蛇跑得快，体型越肥跑得越慢」—— 肥蛇慢下来的同时角速度也自动跟着降
+ * （ω = v / R，R 固定），于是长蛇又慢又难转向，规避操作变难、收益变高，
+ * 形成「吃得多 = 灵活度下降」的取舍。单条命越长越难跑，这正是原作的策略纵深。
+ *
+ * 线性插值：身长 SNAKE_BODY_LENGTH → SNAKE_SPEED_MAX，身长 SNAKE_MAX_LENGTH → SNAKE_SPEED_MIN。
  */
-export const SNAKE_SPEED = 125;
+export const SNAKE_SPEED_MAX = 110;
+export const SNAKE_SPEED_MIN = 62;
 /**
- * 加速后的**绝对**速度（像素每秒）：独立于基础速度单独定义，
- * 这样以后再调巡航速度，加速手感不会跟着漂。
+ * 加速倍率：加速速度 = 当前巡航速度 × 本倍率。
+ * 不再写死「加速后的绝对速度」—— 巡航速度已经随身长变化，写死绝对值会让长蛇加速
+ * 变成 5 倍速的荒谬手感。倍率恒定才符合直觉：加速永远是「快一点」，不是「飞」。
  */
-export const SNAKE_BOOST_SPEED = 314.5;
-/** 加速倍率（由上面两个常量推导，别手写） */
-export const SNAKE_BOOST_MULT = SNAKE_BOOST_SPEED / SNAKE_SPEED;
+export const SNAKE_BOOST_MULT = 1.85;
 /**
  * 最小转弯半径（像素）：手感用"能拐多小的弯"描述，角速度由 ω = v / R 推导。
- * 这样速度越快角速度越大，但轨迹半径永远不小于 R —— 允许贴着很小的圈盘旋，
- * 又不会出现"原地自转"这种物理上说不通的操作。
- *
- * 基础半径 34 → 25：**角速度 ω = 125/25 = 5.00 rad/s 与调速前一致**，
- * 所以"降速"只改直线速度，转向跟手度不变（半径跟着速度等比缩小的必然结果）。
+ * 半径固定 → 速度越慢角速度越小 → 长蛇转向更迟钝（与速度曲线叠加，手感一致）。
  */
 export const SNAKE_MIN_TURN_RADIUS = 25;
 export const SNAKE_BOOST_MIN_TURN_RADIUS = 52;
-/** 最大转向角速度（弧度每秒，由上面的半径推导）= 5.00 / 6.05 */
-export const SNAKE_TURN_RATE = SNAKE_SPEED / SNAKE_MIN_TURN_RADIUS;
-export const SNAKE_BOOST_TURN_RATE = SNAKE_BOOST_SPEED / SNAKE_BOOST_MIN_TURN_RADIUS;
 
 /** 初始身长 / 上限（像素） */
 export const SNAKE_BODY_LENGTH = 160;
 export const SNAKE_MAX_LENGTH = 2400;
+
+/**
+ * 巡航速度（像素/秒）：按身长线性插值。
+ * 身长 = 初始长度 → SNAKE_SPEED_MAX（最快）；身长 = 上限 → SNAKE_SPEED_MIN（最慢）。
+ *
+ * 客户端与 AI 侧必须镜像同一个公式（否则本地预测与服务端权威值漂移，蛇会「拉丝」）。
+ */
+export function snakeCruiseSpeed(length: number): number {
+  const len = Math.max(0, length || 0);
+  const t = Math.min(1, Math.max(0, (len - SNAKE_BODY_LENGTH) / (SNAKE_MAX_LENGTH - SNAKE_BODY_LENGTH)));
+  return SNAKE_SPEED_MAX + (SNAKE_SPEED_MIN - SNAKE_SPEED_MAX) * t;
+}
+
+/** 当前身长下的实际移动速度（加速时 = 巡航 × 倍率） */
+export function snakeMoveSpeed(length: number, boosting: boolean): number {
+  return snakeCruiseSpeed(length) * (boosting ? SNAKE_BOOST_MULT : 1);
+}
+
+/** 当前身长下的转向角速度（rad/s）：ω = v / R，R 固定 → 速度越慢转得越迟钝 */
+export function snakeTurnRate(length: number, boosting: boolean): number {
+  const r = boosting ? SNAKE_BOOST_MIN_TURN_RADIUS : SNAKE_MIN_TURN_RADIUS;
+  return snakeMoveSpeed(length, boosting) / r;
+}
 
 /**
  * 加速：**按住生效，无 CD、无时长上限**，代价是从尾部扣身长。
@@ -783,8 +804,9 @@ export function stepSnake(
     if (!s.alive) continue;
     // 按住加速 + 身长够才生效；加速时转弯半径更大（更危险）
     const boosting = s.boostHeld === true && (s.length || 0) > SNAKE_BOOST_MIN_LEN;
-    const speed = SNAKE_SPEED * (boosting ? SNAKE_BOOST_MULT : 1);
-    const rate = speed / (boosting ? SNAKE_BOOST_MIN_TURN_RADIUS : SNAKE_MIN_TURN_RADIUS);
+    // 速度随身长递减（贪吃蛇大作战手感）：长蛇更慢，角速度也随之下降
+    const speed = snakeMoveSpeed(s.length || 0, boosting);
+    const rate = snakeTurnRate(s.length || 0, boosting);
     const angle = turnToward(s.angle, s.targetAngle, rate * dt);
     moves.push({
       s,
@@ -858,7 +880,11 @@ export function stepSnake(
     if (m.boosting) {
       // 加速的代价：身长按秒扣，扣到下限为止（不扣分、不影响分数）
       s.length = Math.max(SNAKE_BOOST_MIN_LEN, s.length - SNAKE_BOOST_DRAIN * dt);
-      if (s.length <= SNAKE_BOOST_MIN_LEN) s.boostHeld = false;
+      // **不清掉 boostHeld**：玩家的「按住」意图由玩家自己解除（松手）。
+      // 扣到下限时加速自然不再生效（m.boosting 判定含身长条件），
+      // 但按住状态保留 —— 吃到食物长回来后立刻自动恢复加速，不用重新按。
+      // 之前在这里回写 false，会让「手指还按着」却收到「已松开」的快照，
+      // 按钮当场变灰，玩家以为按键失灵。
     }
     truncatePath(s);
   }

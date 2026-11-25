@@ -11,6 +11,10 @@
  *
  * 多层回退（主题只配了部分资源也能用）：
  *   默认包·通用 → 默认包·本游戏 → 选中包·通用 → 选中包·本游戏（后者覆盖前者）
+ *
+ * **按游戏隔离**：清单只包含 `game` 等于当前游戏（外加通用层）的资源，
+ * 所以黑白棋的设置里不会出现贪吃蛇的皮肤或音效；每个游戏的外观分组、音频配置
+ * 都是自己那一份，改一个游戏不影响别的游戏。
  */
 import { MAsset, MAssetPack, MGame, MPlayer, MPlayerAsset } from '../models';
 import type { IAsset, IAssetPack, IPlayerAsset } from '../types';
@@ -39,9 +43,31 @@ export function kindOfGroup(group: string): 'audio' | 'image' {
   return GROUP_KIND[group] || 'image';
 }
 
-/** 玩家可选/装备的蛇皮肤 asset（group=snake） */
-export function isSkinAsset(asset: Pick<IAsset, 'group' | 'kind'>): boolean {
-  return asset.group === 'snake' && asset.kind === 'image';
+/**
+ * 玩家可选/装备的外观资源。
+ *
+ * 判定看**资源行自己的 `equippable` 标记**，不看分组名 ——
+ * 服务端不认「贪吃蛇的 snake 分组才是皮肤」，任何游戏的后台资源都能勾成可装备，
+ * 加新游戏不用改服务端，也不会把别的游戏的皮肤混进当前游戏的设置。
+ */
+export function isSkinAsset(asset: Pick<IAsset, 'group' | 'kind' | 'equippable'>): boolean {
+  return asset.equippable === true && asset.kind === 'image';
+}
+
+/** 清单里的一条外观资源 */
+export interface AssetManifestItem {
+  id: string;
+  /** 分组名（游戏自定义） */
+  group: string;
+  key: string;
+  label: string;
+  url: string;
+  /** 玩家级可装备（能在设置里勾选装备） */
+  equippable: boolean;
+  /** 玩家是否有权使用（free 或已授予） */
+  owned: boolean;
+  /** 是否是当前装备的那一件 */
+  equipped: boolean;
 }
 
 export interface AssetsManifest {
@@ -51,13 +77,15 @@ export interface AssetsManifest {
   revision: string;
   /** 全部图片：asset_id → url（前端加载阶段逐个 decode，对局内零请求） */
   images: Record<string, string>;
-  /** 食物三档：`small|mid|big` → asset_id */
-  food: Record<string, string>;
-  /** 道具：道具注册表 key → asset_id */
-  items: Record<string, string>;
-  /** 蛇皮肤可选项（玩家级；owned 决定能不能选，equipped 是当前装备） */
-  skins: { id: string; key: string; label: string; url: string; owned: boolean; equipped: boolean }[];
-  /** 当前玩家装备的蛇皮肤 asset_id；游客/未选为 '' */
+  /**
+   * 本游戏的外观资源，**按分组**下发：group → items。
+   * 分组名由游戏自己定（snake 的 `snake`/`food`/`items`，黑白棋将来的 `board`/`piece`…），
+   * 服务端只负责按名字分组，不解释含义 —— 前端拿到哪几个分组就渲染哪几个分区。
+   */
+  groups: Record<string, { items: AssetManifestItem[] }>;
+  /** 玩家级可装备的外观（= groups 里 equippable 的汇总，兼容旧接口） */
+  skins: AssetManifestItem[];
+  /** 当前玩家装备的外观 asset_id；游客/未选为 '' */
   equipped: string;
   /** 音频：BGM 列表 + 音效表，随清单一次下发，省一次往返 */
   audio: { bgm: { url: string; label: string }[]; sfx: Record<string, string> };
@@ -110,19 +138,18 @@ export function composeManifest(
   );
 
   const images: Record<string, string> = {};
-  const food: Record<string, string> = {};
-  const items: Record<string, string> = {};
-  const skinRows: IAsset[] = [];
   const bgm: { url: string; label: string }[] = [];
   const sfx: Record<string, string> = {};
+  /** 分组 → 该组的图片资源行 */
+  const byGroup = new Map<string, IAsset[]>();
 
   for (const asset of rows.values()) {
     if (!asset.url) continue;
     if (asset.kind === 'image') {
       images[asset._id] = asset.url;
-      if (asset.group === 'food') food[asset.key] = asset._id;
-      else if (asset.group === 'items') items[asset.key] = asset._id;
-      else if (asset.group === 'snake') skinRows.push(asset);
+      const list = byGroup.get(asset.group);
+      if (list) list.push(asset);
+      else byGroup.set(asset.group, [asset]);
     } else if (asset.group === 'bgm') {
       bgm.push({ url: asset.url, label: asset.label || asset.key });
     } else if (asset.group === 'sfx') {
@@ -130,13 +157,32 @@ export function composeManifest(
     }
   }
 
-  skinRows.sort((a, b) => (a.order - b.order) || a.key.localeCompare(b.key));
   const owned = options.owned;
   const canUse = (a: IAsset) => a.free || !!owned?.has(a._id);
-  // 装备值必须「存在且有权使用」：撤销授权后不能还顶着一个自己没有的皮肤
-  const equipped = options.equipped && skinRows.some(a => a._id === options.equipped && canUse(a))
+  // 装备值必须「存在、是玩家级外观、且有权使用」：撤销授权后不能还顶着一个自己没有的外观
+  const equipRows = [...byGroup.values()].flat().filter(a => isSkinAsset(a));
+  const equipped = options.equipped && equipRows.some(a => a._id === options.equipped && canUse(a))
     ? options.equipped
     : '';
+
+  // 分组 → items：组内按 order、key 排序，前端按数组顺序渲染
+  const groups: Record<string, { items: AssetManifestItem[] }> = {};
+  for (const [group, list] of byGroup) {
+    list.sort((x, y) => (x.order - y.order) || x.key.localeCompare(y.key));
+    groups[group] = {
+      items: list.map(a => ({
+        id: a._id,
+        group: a.group,
+        key: a.key,
+        label: a.label || a.key,
+        url: a.url,
+        equippable: isSkinAsset(a),
+        owned: canUse(a),
+        equipped: a._id === equipped,
+      })),
+    };
+  }
+  const skins = Object.values(groups).flatMap(g => g.items.filter(i => i.equippable));
 
   // 只改资源不改包时 revision 也要变，否则前端一直用旧缓存
   const stamps = [pack?.updatedAt, ...assets.filter(a => a.pack === pack?._id).map(a => a.updatedAt)]
@@ -149,16 +195,8 @@ export function composeManifest(
     pack: pack?._id || DEFAULT_PACK_ID,
     revision,
     images,
-    food,
-    items,
-    skins: skinRows.map(a => ({
-      id: a._id,
-      key: a.key,
-      label: a.label || a.key,
-      url: a.url,
-      owned: canUse(a),
-      equipped: a._id === equipped,
-    })),
+    groups,
+    skins,
     equipped,
     audio: { bgm, sfx },
   };
@@ -230,13 +268,14 @@ export async function audioForPack(packId: string, game: string) {
 }
 
 /**
- * 玩家装备蛇皮肤（按 asset_id）。
- * 必须校验：资源存在、是皮肤、且 free 或已被授予——否则谁都能穿付费皮肤。
+ * 玩家装备外观（按 asset_id）。
+ * 必须校验：资源存在、是玩家级外观（`equippable`）、且 free 或已被授予——
+ * 否则谁都能穿付费外观，或者把「食物图」当成皮肤装备上去。
  */
 export async function equipSkin(userId: string, game: string, assetId: string): Promise<{ skin: string }> {
   const asset = await MAsset.findById(String(assetId || '')).lean(true) as IAsset | null;
-  if (!asset || asset.status === 0) throw new Error('该皮肤不存在或已下架');
-  if (!isSkinAsset(asset)) throw new Error('该资源不是蛇皮肤');
+  if (!asset || asset.status === 0) throw new Error('该外观不存在或已下架');
+  if (!isSkinAsset(asset)) throw new Error('该资源不是可装备的外观');
 
   // 未进过游戏的玩家也会在这里被建出 player 记录：皮肤是玩家级属性，得有承载
   const player = await playerService.getOrCreatePlayer(userId, game);

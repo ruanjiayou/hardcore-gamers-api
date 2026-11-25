@@ -243,7 +243,8 @@ export const SEED_ROBOTS: SeedRobot[] = [
   { user_id: 'robot-user-xiangqi', player_id: 'robot-player-xiangqi', user_name: '象棋大师', game_id: 'xiangqi', slug: 'xiangqi' },
   { user_id: 'robot-user-othello', player_id: 'robot-player-othello', user_name: '黑白棋大师', game_id: 'othello', slug: 'othello' },
   { user_id: 'robot-user-chess', player_id: 'robot-player-chess', user_name: '国际象棋大师', game_id: 'chess', slug: 'chess' },
-  // 贪吃蛇人机：官方无尽桌 4 张 × 每桌 2 个 = 8 个账号（多备 1 个容错）。
+  // 贪吃蛇人机账号池：只有**第一个**官方无尽桌会补人机（每桌 2 个），
+  // 多备几个是为了人机掉线后仍有空闲账号可替换（一个被占用就换一个）。
   // 沿用最早的 robot-player-snake（避免留下孤儿账号），其余顺延。
   { user_id: 'robot-user-snake', player_id: 'robot-player-snake', user_name: '贪吃蛇 1 号', game_id: 'snake', slug: 'snake' },
   ...[2, 3, 4, 5, 6, 7, 8, 9].map(i => ({
@@ -267,7 +268,7 @@ export function stripRobotEmoji(name?: string | null): string {
   return String(name ?? '').replace(/^\s*🤖\s*/u, '');
 }
 
-/** 官方无尽房每桌要配的人机数量 */
+/** 第一个官方无尽房要配的人机数量 */
 export const SNAKE_ENDLESS_BOT_COUNT = 2;
 
 /** 机器人玩家的初始状态，供 seed 与回收逻辑共用 */
@@ -303,14 +304,19 @@ export function robotPlayerSeed(robot: SeedRobot) {
  * - `SEED_ASSET_PACKS`：包元信息（名字/是否默认/是否需要权限）
  * - `SEED_ASSETS`：资源明细，`pack × game × group × key` 唯一
  *
+ * **按游戏隔离**：每条资源都归属一个游戏（`game` = slug），`game=''` 只放
+ * UI 通用音（click/win/lose）。BGM 与音效**都是每游戏一份**，没有「全游戏共用一份 BGM」。
+ *
  * 组约定（可扩展，加一种资源只需加一行）：
  * | group | kind  | key | 说明 |
  * |---|---|---|---|
- * | `bgm`   | audio | `main` / 任意 | 背景音乐，同一游戏可多首 |
- * | `sfx`   | audio | `click`/`move`/`collect`/`win`/`lose` | 音效，游戏级覆盖通用级 |
- * | `food`  | image | `small`/`mid`/`big` | 普通食物三档 |
- * | `items` | image | 道具注册表 key（`magnet`/`star`） | 拾取道具 |
- * | `snake` | image | 任意（`default` 必有） | 蛇皮肤，玩家级选择 |
+ * | `bgm`   | audio | `main` / 任意 | 该游戏的背景音乐，可多首 |
+ * | `sfx`   | audio | `click`/`move`/`collect`/`win`/`lose` | 音效；`click/win/lose` 是通用层，其余游戏级 |
+ * | `food`  | image | `small`/`mid`/`big` | 普通食物三档（贪吃蛇） |
+ * | `items` | image | 道具注册表 key（`magnet`/`star`） | 拾取道具（贪吃蛇） |
+ * | `snake` | image | 任意（`default` 必有） | 蛇皮肤，玩家级可装备 |
+ *
+ * 分组名由游戏自己定，服务端只按名字分组；`equippable=true` 的行才是「玩家级外观」。
  */
 export const SEED_ASSET_PACKS: IAssetPack[] = [
   {
@@ -330,7 +336,7 @@ export const SEED_ASSET_PACKS: IAssetPack[] = [
   },
 ];
 
-/** 包级 BGM：文件是历史路径，别按 key 拼文件名（ambient 的第二首叫 bgm2.mp3） */
+/** 每个包给**每个游戏**配一套曲目（同一套素材，按游戏分行管理，后台可单独换曲） */
 const PACK_BGM: Record<string, { key: string; label: string; file: string }[]> = {
   classic: [{ key: 'main', label: '经典主题', file: 'bgm.mp3' }],
   ambient: [
@@ -339,9 +345,9 @@ const PACK_BGM: Record<string, { key: string; label: string; file: string }[]> =
   ],
   arcade: [{ key: 'main', label: '霓虹', file: 'bgm.mp3' }],
 };
-/** 包级通用音效（房间/大厅层面） */
+/** UI 通用音效（大厅/房间层面，所有游戏共用） */
 const COMMON_SFX = ['click', 'win', 'lose'];
-/** 游戏级音效：按 key 覆盖包级通用配置 */
+/** 游戏级音效：每个游戏自己一份 */
 const GAME_SFX = ['move', 'collect'];
 const AUDIO_GAME_IDS = ['gomoku', 'xiangqi', 'othello', 'chess', '2048', 'tetris', 'snake'];
 
@@ -367,6 +373,7 @@ function seedAsset(
   label: string,
   order = 0,
   free = true,
+  equippable = false,
 ): IAsset {
   return {
     _id: `${pack}_${game || 'common'}_${group}_${key}`,
@@ -378,6 +385,7 @@ function seedAsset(
     kind: group === 'bgm' || group === 'sfx' ? 'audio' : 'image',
     url,
     meta: {},
+    equippable,
     free,
     status: 1,
     order,
@@ -388,12 +396,17 @@ function seedAsset(
 
 export const SEED_ASSETS: IAsset[] = [];
 for (const pack of SEED_ASSET_PACKS) {
-  for (const [i, bgm] of (PACK_BGM[pack._id] || []).entries()) {
-    SEED_ASSETS.push(seedAsset(pack._id, '', 'bgm', bgm.key, `/audio/${pack._id}/common/${bgm.file}`, bgm.label, i));
+  // BGM：每个游戏一份（素材复用同一份文件，但配置行按游戏拆开，后台可单独换曲）
+  for (const game of AUDIO_GAME_IDS) {
+    for (const [i, bgm] of (PACK_BGM[pack._id] || []).entries()) {
+      SEED_ASSETS.push(seedAsset(pack._id, game, 'bgm', bgm.key, `/audio/${pack._id}/common/${bgm.file}`, bgm.label, i));
+    }
   }
+  // UI 通用音效：通用层（game=''）
   for (const [i, key] of COMMON_SFX.entries()) {
     SEED_ASSETS.push(seedAsset(pack._id, '', 'sfx', key, `/audio/${pack._id}/common/${key}.mp3`, key, i));
   }
+  // 游戏级音效：每个游戏自己一份
   for (const game of AUDIO_GAME_IDS) {
     for (const [i, key] of GAME_SFX.entries()) {
       SEED_ASSETS.push(seedAsset(pack._id, game, 'sfx', key, `/audio/${pack._id}/${game}/${key}.mp3`, key, i));
@@ -401,5 +414,7 @@ for (const pack of SEED_ASSET_PACKS) {
   }
 }
 for (const [i, img] of ARCADE_SNAKE_IMAGES.entries()) {
-  SEED_ASSETS.push(seedAsset('arcade', 'snake', img.group, img.key, `/skins/arcade/snake/${img.file}`, img.label, i));
+  // 蛇皮肤是玩家级外观（可装备）；食物/道具是主题资源，玩家不能单独换
+  const equippable = img.group === 'snake';
+  SEED_ASSETS.push(seedAsset('arcade', 'snake', img.group, img.key, `/skins/arcade/snake/${img.file}`, img.label, i, true, equippable));
 }

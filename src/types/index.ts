@@ -126,7 +126,12 @@ export interface IUser {
  * - 权限/上下架是行级字段，能单独控制。
  */
 export type AssetKind = 'audio' | 'image';
-/** 内置分组（`group` 是 string，这里只列约定好的，允许扩展 board/avatar 等） */
+/**
+ * 内置分组（`group` 是 string，这里只列约定好的，允许扩展 board/avatar 等）。
+ *
+ * 分组名由**游戏自己定**：服务端不解释 `snake` / `board` 的含义，只按名字分组下发，
+ * 所以黑白棋配一个 `board` 分组不会牵扯到贪吃蛇的 `snake` 分组。
+ */
 export type AssetGroup = 'bgm' | 'sfx' | 'food' | 'items' | 'snake';
 
 /** 一条资源：资源包 × 游戏 × 分组 × key 唯一 */
@@ -134,7 +139,7 @@ export interface IAsset {
   _id: string;
   /** 所属资源包（`asset_packs._id`） */
   pack: string;
-  /** 所属游戏 slug；`''` 表示全游戏通用（click/win/lose 这类） */
+  /** 所属游戏 slug；`''` 表示全游戏通用（只有 UI 通用音 click/win/lose 这类） */
   game: string;
   /** 分组：bgm / sfx / food / items / snake / 以后任意扩展 */
   group: string;
@@ -145,6 +150,14 @@ export interface IAsset {
   url: string;
   /** 组专属字段：音频时长/循环、皮肤色调与尺寸等，不参与查询 */
   meta?: Record<string, unknown>;
+  /**
+   * 玩家级可装备外观：true = 玩家能在设置里选它并装备（存 `players.skin`）；
+   * false = 主题资源，随资源包整体生效（食物、道具、棋盘……），玩家不能单独换。
+   *
+   * 这个标记是**数据**不是代码：服务端不再硬编码「哪个 group 才是皮肤」，
+   * 任何游戏想加玩家级外观，后台勾一下即可，不用改服务端。
+   */
+  equippable: boolean;
   /** 免授权：默认包资源与基础资源，所有玩家可用 */
   free: boolean;
   status: number; // 1 上架 0 下架

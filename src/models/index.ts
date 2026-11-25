@@ -127,6 +127,8 @@ const assetSchema = new mongoose.Schema<IAsset>({
   kind: { type: String, enum: ['audio', 'image'], default: 'image' },
   url: String,
   meta: mongoose.SchemaTypes.Mixed,
+  // 玩家级可装备外观（存 players.skin）；false = 主题资源，随包整体生效
+  equippable: { type: Boolean, default: false },
   free: { type: Boolean, default: false },
   status: { type: Number, default: 1 },
   order: { type: Number, default: 0 },

@@ -339,16 +339,17 @@ server.listen(config.port, async () => {
   // 重启后回收中断的多人对局（否则房间会永远停在 playing）
   await snakeRuntimeService.resetStaleMatches();
 
-  // 给所有官方无尽桌各补 2 个人机（幂等：已有就只补差量）。
+  // 给第一个官方无尽桌补 2 个人机（幂等：已有就只补差量）。
+  // **只有第一个无尽桌有人机**：其余官方桌保持空桌，玩家进去自己开局。
   // robot 服务没起来时静默跳过，不能拖慢/阻塞服务启动。
   try {
-    const endlessRooms = await MRoom.find({
+    const [endlessRoom] = await MRoom.find({
       game_id: 'snake',
       'settings.variant': 'endless',
       status: { $ne: constant.ROOM.STATUS.deleted },
-    }).sort({ createdAt: 1 }).lean(true);
-    for (const room of endlessRooms) {
-      await ensureRoomBots(room._id, SNAKE_ENDLESS_BOT_COUNT);
+    }).sort({ createdAt: 1 }).limit(1).lean(true);
+    if (endlessRoom) {
+      await ensureRoomBots(endlessRoom._id, SNAKE_ENDLESS_BOT_COUNT);
     }
   } catch (error) {
     console.error('❌ 无尽桌补人机失败（服务继续启动）:', error);

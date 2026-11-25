@@ -10,13 +10,12 @@ const snake = (packId?: string, extra?: Partial<Parameters<typeof composeManifes
   composeManifest(packs, assets, { game: 'snake', packId, ...extra });
 
 describe('资源清单 manifest', () => {
-  test('默认包：图片按 asset_id 索引，食物/道具给 id 索引', () => {
+  test('默认包：图片按 asset_id 索引，外观按分组下发', () => {
     const m = snake();
     expect(m.pack).toBe('classic');
     // classic 没有图片素材 → 全部为空，客户端回退矢量绘制（不能报错）
     expect(m.images).toEqual({});
-    expect(m.food).toEqual({});
-    expect(m.items).toEqual({});
+    expect(m.groups).toEqual({});
     expect(m.skins).toEqual([]);
   });
 
@@ -28,20 +27,28 @@ describe('资源清单 manifest', () => {
       'arcade_snake_items_magnet', 'arcade_snake_items_star',
       'arcade_snake_snake_candy', 'arcade_snake_snake_default', 'arcade_snake_snake_neon',
     ]);
-    expect(m.food).toEqual({
-      small: 'arcade_snake_food_small',
-      mid: 'arcade_snake_food_mid',
-      big: 'arcade_snake_food_big',
-    });
-    expect(m.items).toEqual({ magnet: 'arcade_snake_items_magnet', star: 'arcade_snake_items_star' });
+    // 外观按分组下发：分组名由游戏自己定，服务端只按名字分组
+    expect(Object.keys(m.groups).sort()).toEqual(['food', 'items', 'snake']);
+    expect(m.groups.food.items.map(i => i.id)).toEqual([
+      'arcade_snake_food_small', 'arcade_snake_food_mid', 'arcade_snake_food_big',
+    ]);
+    expect(m.groups.items.items.map(i => i.id)).toEqual([
+      'arcade_snake_items_magnet', 'arcade_snake_items_star',
+    ]);
+    expect(m.groups.snake.items.map(i => i.key)).toEqual(['default', 'neon', 'candy']);
+    // 玩家级外观（可装备）只有蛇皮肤；食物/道具是主题资源，玩家不能单独换
     expect(m.skins.map(s => s.key)).toEqual(['default', 'neon', 'candy']);
+    expect(m.skins.every(s => s.equippable)).toBe(true);
+    expect(m.groups.food.items.every(i => !i.equippable)).toBe(true);
+    expect(m.groups.items.items.every(i => !i.equippable)).toBe(true);
     // 图片 URL 只出现在预加载清单里，且 key 是 id 不是 key
     expect(m.images['arcade_snake_snake_neon']).toBe('/skins/arcade/snake/snake/neon.svg');
   });
 
-  test('音频按游戏生效：游戏级 sfx 覆盖包级，bgm 沿用包级', () => {
+  test('音频按游戏生效：游戏级 sfx 覆盖通用层，BGM 归在游戏名下', () => {
     const m = snake('classic');
     expect(m.audio.sfx.collect).toBe('/audio/classic/snake/collect.mp3');
+    // click/win/lose 是 UI 通用音（game=''），所有游戏共用
     expect(m.audio.sfx.click).toBe('/audio/classic/common/click.mp3');
     expect(m.audio.bgm).toHaveLength(1);
     expect(m.audio.bgm[0].url).toBe('/audio/classic/common/bgm.mp3');
@@ -50,9 +57,24 @@ describe('资源清单 manifest', () => {
     expect(gomoku.audio.sfx.collect).toBe('/audio/classic/gomoku/collect.mp3');
   });
 
+  test('BGM 与音效都是每个游戏各配一份（种子层面校验）', () => {
+    const bgmRows = assets.filter(a => a.group === 'bgm');
+    // 每个游戏都有自己的一行 BGM 配置
+    expect(new Set(bgmRows.map(a => a.game)).size).toBe(7);
+    // 通用层没有 BGM —— 通用包只留 UI 通用音
+    expect(bgmRows.some(a => a.game === '')).toBe(false);
+    // UI 通用音在通用层
+    const commonSfx = assets.filter(a => a.group === 'sfx' && a.game === '');
+    expect(new Set(commonSfx.map(a => a.key))).toEqual(new Set(['click', 'win', 'lose']));
+    // 游戏级音效也各归各的游戏
+    const gameSfx = assets.filter(a => a.group === 'sfx' && a.game !== '');
+    expect(new Set(gameSfx.map(a => a.game)).size).toBe(7);
+  });
+
   test('不同游戏互不共用资源：棋类拿不到贪吃蛇的皮肤图', () => {
     const gomoku = composeManifest(packs, assets, { game: 'gomoku', packId: 'arcade' });
     expect(gomoku.images).toEqual({});
+    expect(gomoku.groups).toEqual({});
     expect(gomoku.skins).toEqual([]);
   });
 
@@ -63,13 +85,13 @@ describe('资源清单 manifest', () => {
       ...assets,
       {
         _id: 'arcade2_snake_food_small', pack: 'arcade2', game: 'snake', group: 'food', key: 'small',
-        label: '小果', kind: 'image', url: '/x/small.svg', meta: {}, free: true, status: 1, order: 0,
+        label: '小果', kind: 'image', url: '/x/small.svg', meta: {}, equippable: false, free: true, status: 1, order: 0,
         createdAt: SEED_TIME, updatedAt: SEED_TIME,
       },
       // 默认包里放一张 mid，验证「选中的包没有 → 从默认包取」
       {
         _id: 'classic_snake_food_mid', pack: 'classic', game: 'snake', group: 'food', key: 'mid',
-        label: '中果', kind: 'image', url: '/x/mid.svg', meta: {}, free: true, status: 1, order: 0,
+        label: '中果', kind: 'image', url: '/x/mid.svg', meta: {}, equippable: false, free: true, status: 1, order: 0,
         createdAt: SEED_TIME, updatedAt: SEED_TIME,
       },
     ];
@@ -78,7 +100,9 @@ describe('资源清单 manifest', () => {
     });
     expect(m.images['arcade2_snake_food_small']).toBe('/x/small.svg');
     expect(m.images['classic_snake_food_mid']).toBe('/x/mid.svg');
-    expect(m.food).toEqual({ small: 'arcade2_snake_food_small', mid: 'classic_snake_food_mid' });
+    expect(m.groups.food.items.map(i => i.id).sort()).toEqual(
+      ['arcade2_snake_food_small', 'classic_snake_food_mid'].sort(),
+    );
   });
 
   test('下架的资源不参与清单', () => {
