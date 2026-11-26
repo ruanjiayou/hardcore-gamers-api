@@ -10,7 +10,7 @@
 // 必须第一个 import：让 console 桥接早于任何模块打日志（ESM 按声明顺序求值）
 import { createLogger, flushLogs } from './utils/logger';
 
-import express, { Express, Router } from 'express';
+import express, { Express, Router, type NextFunction, type Request, type Response } from 'express';
 import http from 'http';
 import path from 'path';
 import { Server, Socket } from 'socket.io';
@@ -34,6 +34,7 @@ import diagnosticsController from './controller/diagnostics'
 import { apiNotFound, errorHandler, getHttpStats, requestLogger } from './middleware/requestLogger'
 import { listMounts, listRoutes, mountRoute } from './utils/routes'
 import { buildInfo } from './utils/buildInfo'
+import { resolveLobbyEntry } from './utils/lobbyFallback'
 import config from './config';
 import { userService } from './services/UserService';
 import { seedAll } from './seed';
@@ -173,6 +174,29 @@ app.post('/api/test', (req, res) => {
   res.end();
   // io.to(req.body).emit('room:player-action', {})
 })
+
+/**
+ * lobby 多 HTML 产物的生产环境 SPA 回退。
+ *
+ * 前面的 express.static('public') 已把真实存在的文件直接发出去（含 game/<slug>/assets/*），
+ * 这里只会命中 HTML5 路由路径。按 URL 解析出对应入口：公共路由 → lobby/index.html，
+ * 7 个白名单 slug 的游戏路由 → lobby/game/<slug>/index.html；未知 slug 交给后续路由。
+ */
+const lobbySpaFallback = (req: Request, res: Response, next: NextFunction) => {
+  const entry = resolveLobbyEntry(req.path);
+  if (!entry) return next();
+  res.sendFile(path.resolve(entry), err => {
+    if (err && !res.headersSent) {
+      httpLog.warn(`lobby 未构建：${req.originalUrl}（缺少 ${entry}，在 lobby/ 下构建后部署到 server/public/lobby）`);
+      res.status(404).send(`lobby 未构建：缺少 ${entry}，请在 lobby/ 下构建后部署到 server/public/lobby`);
+    }
+  });
+};
+// gameUrl(slug) 生成的是不带尾斜杠的 /lobby/game/<slug>，必须单独登记，
+// 否则会落到下面的 /lobby/* 回退到公共入口，大厅点游戏反而回到大厅。
+app.get(['/lobby', '/lobby/game/:slug'], lobbySpaFallback);
+app.get('/lobby/game/:slug/*', lobbySpaFallback);
+app.get('/lobby/*', lobbySpaFallback);
 
 /**
  * Socket.io 认证中间件
