@@ -54,11 +54,23 @@ export function setupInviteHandlers(io: Server, socket: AuthSocket, user_id: str
     const me = await MPlayer.findOne({ user_id, game_id: room.game_id }).lean(true);
     if (!me || !room.members.some(m => m._id === me._id)) return cb?.(false, '你不在这个房间里');
 
-    // 支持按登录名或 user_id 邀请（没有好友关系表，用户名就是唯一的"好友入口"）
-    const targetUser = await MUser.findOne(
-      { $or: [{ name: target }, { _id: target }] },
-      { name: 1, nickname: 1, avatar: 1 },
-    ).lean(true) as any;
+    // 好友主体是 player_id（UI-072 顶栏好友下拉传的就是它）：
+    // 先按本游戏内的 player_id 反查 user_id；登录名 / user_id 老入口仍兼容（SB-044）。
+    let targetUser: any = null;
+    if (/^[a-fA-F0-9]{24}$/.test(target)) {
+      const byPlayer = await MPlayer.findOne(
+        { _id: target, game_id: room.game_id }, { user_id: 1 },
+      ).lean(true) as any;
+      if (byPlayer?.user_id) {
+        targetUser = await MUser.findById(byPlayer.user_id, { name: 1, nickname: 1, avatar: 1 }).lean(true) as any;
+      }
+    }
+    if (!targetUser) {
+      targetUser = await MUser.findOne(
+        { $or: [{ name: target }, { _id: target }] },
+        { name: 1, nickname: 1, avatar: 1 },
+      ).lean(true) as any;
+    }
     if (!targetUser) return cb?.(false, '用户不存在');
     if (targetUser._id === user_id) return cb?.(false, '不能邀请自己');
 

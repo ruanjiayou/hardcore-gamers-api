@@ -5,14 +5,16 @@
  */
 import { Router } from 'express';
 import type { Server } from 'socket.io';
-import { MPlayer } from '../models';
+import { MPlayer, MMatch } from '../models';
 import { httpAuth, type AuthedRequest } from '../middleware/httpAuth';
 import redis from '../utils/redis';
 import { playerService } from '../services/PlayerService';
 import { FriendService, REQ_TTL, type FriendRequest } from '../services/FriendService';
+import { RecentPlaymatesCache, RECENT_LIMIT, type RecentRedis } from '../services/RecentPlaymatesCache';
 
 const router = Router();
 const friends = new FriendService(redis as any);
+const recentCache = new RecentPlaymatesCache(redis as unknown as RecentRedis);
 
 const fail = (res: any, message: string) => res.json({ code: -1, message });
 
@@ -36,7 +38,7 @@ async function push(player_id: string, event: 'friend:request' | 'friend:result'
 /** 玩家展示信息（昵称/头像/等级都是玩家级字段） */
 async function present(ids: string[]) {
   if (!ids.length) return [] as any[];
-  const players = await MPlayer.find({ _id: { $in: ids } }, {
+  const players = await MPlayer.find({ _id: { $in: ids }, type: { $ne: 'robot' } }, {
     nickname: 1, avatar: 1, level: 1, atline: 1, type: 1,
   }).lean(true) as any[];
   return players.map(p => ({
@@ -65,6 +67,48 @@ router.get('/', async (req: AuthedRequest, res) => {
     const { me } = await myPlayer(req);
     const ids = await friends.listFriendIds(me);
     res.json({ code: 0, data: { list: await present(ids) } });
+  } catch (err: any) { fail(res, err.message); }
+});
+
+/**
+ * 最近同玩（`SB-063`）：Redis ZSET 命中直接用，空则查 matches 回源。
+ * 一条 match 存同场全部 players[]._id，按 game_id 隔离、跳过单人局与机器人。
+ */
+router.get('/recent', async (req: AuthedRequest, res) => {
+  try {
+    const { me, game_id } = await myPlayer(req);
+    const cached = await recentCache.get(game_id, me);
+    const last = new Map<string, number>(cached.map(r => [r.player_id, r.at]));
+    let ids = cached.map(r => r.player_id);
+    if (!ids.length) {
+      const matches = await MMatch.find(
+        { 'players._id': me, status: 'gameover', game_id },
+        { players: 1, createdAt: 1, updatedAt: 1 },
+      ).sort({ updatedAt: -1 }).limit(RECENT_LIMIT).lean(true) as any[];
+
+      for (const m of matches) {
+        if ((m.players || []).length <= 1) continue;
+        const at = new Date(m.updatedAt || m.createdAt).getTime();
+        for (const p of m.players) {
+          const pid = String(p._id);
+          if (pid !== me && !last.has(pid)) last.set(pid, at); // 倒序遍历，先出现的是最近一次
+        }
+      }
+      ids = [...last.keys()];
+      if (ids.length) {
+        await recentCache.set(game_id, me, ids.map(pid => ({ player_id: pid, at: last.get(pid)! })));
+      }
+    }
+    const users = await present(ids);
+    res.json({
+      code: 0,
+      data: {
+        list: users.map(u => ({
+          ...u,
+          last_played_at: last.get(u.player_id) ? new Date(last.get(u.player_id)!).toISOString() : '',
+        })),
+      },
+    });
   } catch (err: any) { fail(res, err.message); }
 });
 
