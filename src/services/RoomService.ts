@@ -25,6 +25,9 @@ import { snakeRuntimeService } from './SnakeRuntimeService';
 import { matchQueue } from './MatchQueueService';
 import { getGameParams } from './GameParamsService';
 import { playerService } from './PlayerService';
+import { RecentPlaymatesCache, type RecentRedis } from './RecentPlaymatesCache';
+
+const recentCache = new RecentPlaymatesCache(redis as unknown as RecentRedis);
 
 export class RoomService {
 
@@ -603,6 +606,13 @@ export class RoomService {
       updatedAt: new Date(),
       stats: {},
     })
+
+    // 最近同玩缓存（`SB-063`）：只对**已有缓存**的玩家增量 ZADD 同场真人，
+    // 让「最近」列表立刻反映这局；没查过最近页的玩家不建冷 key。失败不影响开赛。
+    const humanIds = players
+      .filter(p => p.player_type !== constant.PLAYER.TYPE.robot)
+      .map(p => String(p._id));
+    recentCache.touchOnGameStart(room.game_id, humanIds, Date.now()).catch(() => {});
 
     await MRoom.updateOne({ _id: room_id }, {
       $set: {
