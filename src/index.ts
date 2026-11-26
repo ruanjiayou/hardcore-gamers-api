@@ -25,6 +25,7 @@ import redis from './utils/redis'
 import gameController from './controller/game'
 import oauthController from './controller/oauth'
 import userController from './controller/user'
+import friendController, { setFriendIO } from './controller/friend'
 import matchController from './controller/match'
 import voicePackController from './controller/voicePack'
 import assetsController from './controller/assets'
@@ -148,6 +149,7 @@ const ROUTES: [prefix: string, router: any, name: string][] = [
   ['/api/games', gameController, 'game'],
   ['/api/oauth', oauthController, 'oauth'],
   ['/api/users', userController, 'user'],
+  ['/api/friends', friendController, 'friend'],
   ['/api/matches', matchController, 'match'],
   ['/api/voice-packs', voicePackController, 'voicePack'],
   ['/api/assets', assetsController, 'assets'],
@@ -178,6 +180,9 @@ app.post('/api/test', (req, res) => {
 io.use((socket, next) => {
   authMiddleware(socket as AuthSocket, next);
 });
+
+// 好友申请的实时推送要按 player_id 反查 user_id 后定向发，controller 通过注入拿到 io（SB-061）
+setFriendIO(io);
 
 const usersMap = new Map<string, string>();
 /**

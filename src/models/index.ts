@@ -109,6 +109,17 @@ userSchema.virtual('hasVoicePackPermission').get(function (this: IUser) {
 export const MUser = mongoose.model<IUser>('users', userSchema);
 
 /**
+ * 好友关系（`SB-060`）：player 维度、按游戏天然隔离。
+ * `_id = ${player_a}:${player_b}`（字典序小的在前）→ 一条关系一行、双向查询只查一次。
+ */
+export const MFriend = mongoose.model('friends', new mongoose.Schema({
+  _id: String,
+  player_a: { type: String, index: true },
+  player_b: { type: String, index: true },
+  createdAt: { type: Date, default: Date.now },
+}, { collection: 'friends', versionKey: false }));
+
+/**
  * 资源包（原 `voice_packs`）：只存包的元信息，资源明细在 `assets`。
  * 拆开是为了「一个包的多个字段都要能改/能传」——嵌套大对象改一项就整块覆盖。
  */

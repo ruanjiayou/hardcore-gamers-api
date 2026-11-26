@@ -24,6 +24,7 @@ import {
 import { snakeRuntimeService } from './SnakeRuntimeService';
 import { matchQueue } from './MatchQueueService';
 import { getGameParams } from './GameParamsService';
+import { playerService } from './PlayerService';
 
 export class RoomService {
 
@@ -675,6 +676,8 @@ export class RoomService {
     if (match.status === constant.MATCH.STATUS.gameover) {
       return;
     }
+    // 结算会改多名玩家的 score / boards，先按 game 失效排行榜缓存（SB-062）
+    await playerService.invalidateLeaderboardByGame(String((match as any).game_id || ''), board);
     // 有显式分数表时用之；否则沿用对战游戏的 ±1/平局 0 语义。
     const scoreOf = (pid: string) => scores
       ? (scores[pid] ?? 0)

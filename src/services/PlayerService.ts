@@ -11,6 +11,9 @@ import { isEmpty, sumBy } from 'lodash';
 import constant, { PlayerState, RoomStatus } from '../constant';
 import { isDanglingRoomRef, isZombieMatch, isZombieRoom } from '../utils/roomPolicy';
 import { EMPTY_PLAYER_STATS } from '../utils/stats';
+import { LeaderboardCache } from './LeaderboardCache';
+
+const boardCache = new LeaderboardCache(redis as any);
 
 export class PlayerService {
 
@@ -244,21 +247,40 @@ export class PlayerService {
    * @param board 可选分榜 key（如贪吃蛇 endless/team）：按 boards.<key> 最高分排序；
    *              缺省按游戏总分 score 排序（棋类等单一玩法的游戏）
    */
+  /** 写分后失效排行榜缓存：按 player 反查 game_id（SB-062） */
+  async invalidateLeaderboard(player_id: string, board?: string) {
+    const p = await MPlayer.findById(player_id, { game_id: 1 }).lean(true) as any;
+    if (p?.game_id) await boardCache.invalidate(String(p.game_id), board);
+  }
+
+  /** 批量结算场景按 game_id 直接失效，省掉逐个查 player */
+  async invalidateLeaderboardByGame(game_id: string, board?: string) {
+    if (!game_id) return;
+    await boardCache.invalidate(String(game_id), board);
+  }
+
   async getLeaderboard(slug: string, limit: number = 5, board?: string) {
     const game = await MGame.findOne({ slug }).lean(true);
     if (!game) return [];
+    const game_id = String(game._id);
 
+    // 缓存的是 Top100；空数组也缓存（raw='[]' Truthy），避免空榜反复打 Mongo
+    const cached = await boardCache.get(game_id, board);
+    if (cached) return cached.slice(0, limit);
+
+    let rows: any[];
     if (board) {
       // 只取在该玩法上有成绩的玩家，避免空成绩刷屏；score 用分榜分数返回给前端
       const players = await MPlayer.find({ game_id: game._id, [`boards.${board}`]: { $gt: 0 } })
-        .limit(limit)
+        .limit(100)
         .sort({ [`boards.${board}`]: -1, exp: -1 })
         .lean(true);
-      return players.map(p => ({ ...p, score: p.boards?.[board] ?? 0, board_score: p.boards?.[board] ?? 0 }));
+      rows = players.map(p => ({ ...p, score: p.boards?.[board] ?? 0, board_score: p.boards?.[board] ?? 0 }));
+    } else {
+      rows = await MPlayer.find({ game_id: game._id }).limit(100).sort({ score: -1, exp: -1 }).lean(true);
     }
-
-    const players = await MPlayer.find({ game_id: game._id }).limit(limit).sort({ score: -1, exp: -1 }).lean(true)
-    return players;
+    await boardCache.set(game_id, board, rows);
+    return rows.slice(0, limit);
   }
 
   /**

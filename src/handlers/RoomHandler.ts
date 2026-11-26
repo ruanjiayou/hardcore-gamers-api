@@ -5,6 +5,7 @@
 import type { Server } from 'socket.io';
 import { CB } from '../types';
 import { roomService } from '../services/RoomService';
+import { playerService } from '../services/PlayerService';
 import { snakeRuntimeService } from '../services/SnakeRuntimeService';
 import type { AuthSocket } from '../middleware/auth';
 import constant from '../constant'
@@ -344,7 +345,10 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
         // 单人游戏进度上报（2048/贪吃蛇无尽等）：只更新玩家最高分，不广播、不结算。
         if (data?.progress) {
           const isRecord = await roomService.recordSoloScore(movement.player_id, data.score, data.board);
-          if (isRecord) console.log(`📊 刷新最高分 player=${movement.player_id} board=${data.board || '-'} score=${data.score}`);
+          if (isRecord) {
+            await playerService.invalidateLeaderboard(movement.player_id, data.board);
+            console.log(`📊 刷新最高分 player=${movement.player_id} board=${data.board || '-'} score=${data.score}`);
+          }
           return;
         }
         io.to(`room:${match.room_id}`).emit('room:player-action', data);

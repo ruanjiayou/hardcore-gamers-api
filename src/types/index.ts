@@ -195,6 +195,17 @@ export interface IAssetPack {
  * 不是所有资源都默认对玩家开放：收费皮肤、活动限定等要先「授予」。
  * 判定顺序：资源 `free` → 直接可用；否则看本表有没有 (player_id, asset_id) 记录。
  */
+/**
+ * 好友关系（`SB-060`）：主体是**玩家**不是用户，所以按游戏天然隔离。
+ * 一条关系一行，`_id` 用字典序规范化后的 `player_a:player_b` —— 接受申请时 upsert，天然幂等。
+ */
+export interface IFriend {
+  _id: string;
+  player_a: string;
+  player_b: string;
+  createdAt: Date;
+}
+
 export interface IPlayerAsset {
   player_id: string;
   asset_id: string;

@@ -33,6 +33,7 @@ import {
   type SnakeVariant,
 } from '../games/snake/rules';
 import { DEFAULT_SNAKE_PARAMS, resolveSnakeParams, type SnakeParams } from '../games/snake/params';
+import { playerService } from './PlayerService';
 
 export interface SnakeFinishInfo {
   room_id: string;
@@ -539,6 +540,8 @@ export class SnakeRuntimeService {
         { _id: player_id },
         { $max: { score, [`boards.${board}`]: score } },
       );
+      // 上榜成功 → 失效缓存，死亡弹框里的榜单当场就是新分数（SB-062）
+      await playerService.invalidateLeaderboard(player_id, board);
     } catch (error) {
       console.log('❌ 贪吃蛇分数上榜失败:', error);
     }
