@@ -253,6 +253,8 @@ export interface IPlayer {
   difficulty?: string;
   /** 玩家装备的蛇皮肤（`assets._id`，group=snake）；空 = 用默认皮肤 */
   skin?: string;
+  /** 玩家装备的死亡残骸外观（`assets._id`，group=corpse）；空 = 用默认残骸 */
+  corpse_skin?: string;
   createdAt: Date;
   updatedAt: Date;
 }

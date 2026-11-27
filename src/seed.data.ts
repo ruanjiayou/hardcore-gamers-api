@@ -305,72 +305,49 @@ export function robotPlayerSeed(robot: SeedRobot) {
 }
 
 /**
- * 资源种子：**只用于首次部署灌库**，之后管理端说了算（`seedAssets` 有一次性标记，重启不回写）。
+ * 资源种子：只用于首次部署灌库，之后管理端说了算（`seedAssets` 一次性标记）。
  *
- * 数据切成「包」+「一行一条资源」：
- * - `SEED_ASSET_PACKS`：包元信息（名字/是否默认/是否需要权限）
- * - `SEED_ASSETS`：资源明细，`pack × game × group × key` 唯一
- *
- * **按游戏隔离**：每条资源都归属一个游戏（`game` = slug），`game=''` 只放
- * UI 通用音（click/win/lose）。BGM 与音效**都是每游戏一份**，没有「全游戏共用一份 BGM」。
+ * SB-066：只有一个 `default` 包——「经典/深空/街机主题」不再作为产品概念，
+ * `asset_packs` 只留一个存储分组。资源明细 `pack × game × group × key` 唯一。
+ * 每条资源都属于某个游戏（`game` = slug），**没有全游戏通用层**；
+ * click/win/lose 也按游戏各配一行，避免「所有游戏共用一份音效」。
  *
  * 组约定（可扩展，加一种资源只需加一行）：
- * | group | kind  | key | 说明 |
+ * | group | kind | key | 说明 |
  * |---|---|---|---|
- * | `bgm`   | audio | `main` / 任意 | 该游戏的背景音乐，可多首 |
- * | `sfx`   | audio | `click`/`move`/`collect`/`win`/`lose` | 音效；`click/win/lose` 是通用层，其余游戏级 |
- * | `food`  | image | `small`/`mid`/`big` | 普通食物三档（贪吃蛇） |
- * | `items` | image | 道具注册表 key（`magnet`/`star`） | 拾取道具（贪吃蛇） |
- * | `snake` | image | 任意（`default` 必有） | 蛇皮肤，玩家级可装备 |
- *
- * 分组名由游戏自己定，服务端只按名字分组；`equippable=true` 的行才是「玩家级外观」。
+ * | `bgm` | audio | `main`/`secondary` | 该游戏背景音乐 |
+ * | `sfx` | audio | `click`/`move`/`collect`/`win`/`lose` | 音效，按游戏各一份 |
+ * | `food` | image | `small`/`mid`/`big` | 食物三档（贪吃蛇，不可装备） |
+ * | `items` | image | `magnet`/`star` | 道具（贪吃蛇，不可装备） |
+ * | `snake` | image | `default`/`neon`/`candy` | 蛇皮肤：url=身体图，meta.head=蛇头图（可装备） |
+ * | `corpse` | image | `default` | 死亡残骸外观（可装备） |
  */
 export const SEED_ASSET_PACKS: IAssetPack[] = [
   {
-    _id: 'classic', name: '经典', desc: '轻快的默认音效，七个游戏各有专属操作音',
-    cover: '🎵', isDefault: true, requirePermission: false, status: 1,
-    createdAt: SEED_TIME, updatedAt: SEED_TIME,
-  },
-  {
-    _id: 'ambient', name: '深空', desc: '空灵的环境氛围，七个游戏各有柔和提示音',
-    cover: '🌌', isDefault: false, requirePermission: true, status: 1,
-    createdAt: SEED_TIME, updatedAt: SEED_TIME,
-  },
-  {
-    _id: 'arcade', name: '街机', desc: '明快的电子节奏，带霓虹皮肤素材',
-    cover: '🕹️', isDefault: false, requirePermission: true, status: 1,
+    _id: 'default', name: '默认', desc: '按游戏隔离的默认资源',
+    cover: '🎮', isDefault: true, requirePermission: false, status: 1,
     createdAt: SEED_TIME, updatedAt: SEED_TIME,
   },
 ];
 
-/** 每个包给**每个游戏**配一套曲目（同一套素材，按游戏分行管理，后台可单独换曲） */
-const PACK_BGM: Record<string, { key: string; label: string; file: string }[]> = {
-  classic: [{ key: 'main', label: '经典主题', file: 'bgm.mp3' }],
-  ambient: [
-    { key: 'main', label: '星域', file: 'bgm.mp3' },
-    { key: 'secondary', label: '漂浮', file: 'bgm2.mp3' },
-  ],
-  arcade: [{ key: 'main', label: '霓虹', file: 'bgm.mp3' }],
-};
-/** UI 通用音效（大厅/房间层面，所有游戏共用） */
+const PACK_BGM = [{ key: 'main', label: '默认主题', file: 'bgm.mp3' }];
 const COMMON_SFX = ['click', 'win', 'lose'];
-/** 游戏级音效：每个游戏自己一份 */
 const GAME_SFX = ['move', 'collect'];
 const AUDIO_GAME_IDS = ['gomoku', 'xiangqi', 'othello', 'chess', '2048', 'tetris', 'snake'];
 
-/** 街机主题的贪吃蛇素材（其余主题不带图 → 客户端回退矢量绘制） */
-const ARCADE_SNAKE_IMAGES: { group: string; key: string; label: string; file: string }[] = [
+/** 贪吃蛇图片：皮肤一项对应身体 + 蛇头两张图，展示时只用身体缩略图 */
+const SNAKE_IMAGES: { group: string; key: string; label: string; file: string; equippable?: boolean; head?: string }[] = [
   { group: 'food', key: 'small', label: '小果', file: 'food/small.svg' },
   { group: 'food', key: 'mid', label: '中果', file: 'food/mid.svg' },
   { group: 'food', key: 'big', label: '大果', file: 'food/big.svg' },
   { group: 'items', key: 'magnet', label: '磁铁', file: 'items/magnet.svg' },
   { group: 'items', key: 'star', label: '星星', file: 'items/star.svg' },
-  { group: 'snake', key: 'default', label: '斜纹', file: 'snake/default.svg' },
-  { group: 'snake', key: 'neon', label: '霓虹点', file: 'snake/neon.svg' },
-  { group: 'snake', key: 'candy', label: '糖果', file: 'snake/candy.svg' },
+  { group: 'snake', key: 'default', label: '斜纹', file: 'snake/default-body.svg', equippable: true, head: 'snake/default-head.svg' },
+  { group: 'snake', key: 'neon', label: '霓虹点', file: 'snake/neon-body.svg', equippable: true, head: 'snake/neon-head.svg' },
+  { group: 'snake', key: 'candy', label: '糖果', file: 'snake/candy-body.svg', equippable: true, head: 'snake/candy-head.svg' },
+  { group: 'corpse', key: 'default', label: '默认残骸', file: 'corpse/default.svg', equippable: true },
 ];
 
-/** 生成一条资源；`_id` 是可读的确定性 id（种子重复运行不会变，引用它的 player/match 不会悬空） */
 function seedAsset(
   pack: string,
   game: string,
@@ -381,6 +358,7 @@ function seedAsset(
   order = 0,
   free = true,
   equippable = false,
+  meta: Record<string, unknown> = {},
 ): IAsset {
   return {
     _id: `${pack}_${game || 'common'}_${group}_${key}`,
@@ -391,7 +369,7 @@ function seedAsset(
     label,
     kind: group === 'bgm' || group === 'sfx' ? 'audio' : 'image',
     url,
-    meta: {},
+    meta,
     equippable,
     free,
     status: 1,
@@ -402,26 +380,18 @@ function seedAsset(
 }
 
 export const SEED_ASSETS: IAsset[] = [];
-for (const pack of SEED_ASSET_PACKS) {
-  // BGM：每个游戏一份（素材复用同一份文件，但配置行按游戏拆开，后台可单独换曲）
-  for (const game of AUDIO_GAME_IDS) {
-    for (const [i, bgm] of (PACK_BGM[pack._id] || []).entries()) {
-      SEED_ASSETS.push(seedAsset(pack._id, game, 'bgm', bgm.key, `/audio/${pack._id}/common/${bgm.file}`, bgm.label, i));
-    }
+for (const game of AUDIO_GAME_IDS) {
+  for (const [i, bgm] of PACK_BGM.entries()) {
+    SEED_ASSETS.push(seedAsset('default', game, 'bgm', bgm.key, `/audio/default/common/${bgm.file}`, bgm.label, i));
   }
-  // UI 通用音效：通用层（game=''）
-  for (const [i, key] of COMMON_SFX.entries()) {
-    SEED_ASSETS.push(seedAsset(pack._id, '', 'sfx', key, `/audio/${pack._id}/common/${key}.mp3`, key, i));
-  }
-  // 游戏级音效：每个游戏自己一份
-  for (const game of AUDIO_GAME_IDS) {
-    for (const [i, key] of GAME_SFX.entries()) {
-      SEED_ASSETS.push(seedAsset(pack._id, game, 'sfx', key, `/audio/${pack._id}/${game}/${key}.mp3`, key, i));
-    }
+  for (const [i, key] of [...COMMON_SFX, ...GAME_SFX].entries()) {
+    SEED_ASSETS.push(seedAsset('default', game, 'sfx', key, `/audio/default/${game}/${key}.mp3`, key, i));
   }
 }
-for (const [i, img] of ARCADE_SNAKE_IMAGES.entries()) {
-  // 蛇皮肤是玩家级外观（可装备）；食物/道具是主题资源，玩家不能单独换
-  const equippable = img.group === 'snake';
-  SEED_ASSETS.push(seedAsset('arcade', 'snake', img.group, img.key, `/skins/arcade/snake/${img.file}`, img.label, i, true, equippable));
+for (const [i, img] of SNAKE_IMAGES.entries()) {
+  const body = `/skins/default/snake/${img.file}`;
+  SEED_ASSETS.push(seedAsset(
+    'default', 'snake', img.group, img.key, body, img.label, i, true, img.equippable === true,
+    img.head ? { head: `/skins/default/snake/${img.head}`, body } : {},
+  ));
 }

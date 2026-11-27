@@ -205,6 +205,7 @@ export const MPlayer = mongoose.model<IPlayer & { room_id: string }>('players', 
   // 玩家装备的蛇皮肤（`assets._id`，group=snake）：玩家级属性，按游戏天然隔离；
   // 对局快照与 match.players 都引用这个 id，图由 manifest 预加载
   skin: String,
+  corpse_skin: String,
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 }, { collection: 'players', versionKey: false }))

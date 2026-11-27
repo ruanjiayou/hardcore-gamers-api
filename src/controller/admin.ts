@@ -19,7 +19,7 @@ import constant, { isRobotDifficulty } from '../constant';
 import { MAsset, MAssetPack, MGame, MMatch, MPlayer, MPlayerAsset, MRoom, MUser } from '../models';
 import { addRobotToRoom } from '../services/RobotService';
 import { invalidatePackCache } from '../services/VoicePackService';
-import { assetsService, kindOfGroup, listPacks, purgePack } from '../services/AssetsService';
+import { assetsService, kindOfGroup, listPacks, purgePack, DEFAULT_PACK_ID } from '../services/AssetsService';
 import { roomService } from '../services/RoomService';
 import { getGameParamSchema } from '../services/GameParamsService';
 import { getGameDefaultParams, isGameParamsDefault, normalizeGameParams } from '../games/paramsRegistry';
@@ -384,7 +384,8 @@ router.get('/assets', wrap(async (req, res) => {
 
 /** 校验并规范化一条资源（新建与修改共用） */
 function normalizeAsset(body: any, existing?: any) {
-  const pack = body.pack !== undefined ? assertSlug(body.pack, 'pack') : existing?.pack;
+  // 后台不再暴露主题包选择器：新建资源写默认包（SB-066 / ADMIN-013）
+  const pack = body.pack !== undefined ? assertSlug(body.pack, 'pack') : (existing?.pack ?? DEFAULT_PACK_ID);
   if (!pack) throw new Error('缺少 pack');
   const game = body.game !== undefined ? String(body.game).trim() : (existing?.game || '');
   if (game && !SLUG_RE.test(game)) throw new Error('game 不合法');
