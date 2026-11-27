@@ -48,3 +48,22 @@ describe('贪吃蛇运行时 · 同房间唯一性', () => {
     expect(pickStaleRuntime(list, 'r2', 'm-new')).toBeNull();
   });
 });
+
+describe('贪吃蛇运行时 · 团队合局 3 房共 1 运行时（SB-064）', () => {
+  test('合局运行时覆盖任一房间都算命中', () => {
+    const list = [{ match_id: 'm-old', room_id: 'r1', room_ids: ['r1', 'r2', 'r3'] }];
+    expect(pickStaleRuntime(list as any, 'r2', 'm-new')).toBe('m-old');
+    expect(pickStaleRuntime(list as any, 'r3', 'm-new')).toBe('m-old');
+  });
+
+  test('同一合局的 3 房不算互相冲突', () => {
+    const list = [{ match_id: 'm1', room_id: 'r1', room_ids: ['r1', 'r2', 'r3'] }];
+    expect(pickStaleRuntime(list as any, 'r2', 'm1')).toBeNull();
+  });
+
+  test('快照要广播到全部参与房间', () => {
+    const roomsOf = (rt: any) => (rt.room_ids?.length ? rt.room_ids : [rt.room_id]);
+    expect(roomsOf({ room_id: 'r1', room_ids: ['r1', 'r2', 'r3'] })).toEqual(['r1', 'r2', 'r3']);
+    expect(roomsOf({ room_id: 'solo' })).toEqual(['solo']);
+  });
+});

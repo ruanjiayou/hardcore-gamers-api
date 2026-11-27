@@ -26,6 +26,7 @@ import { matchQueue } from './MatchQueueService';
 import { getGameParams } from './GameParamsService';
 import { playerService } from './PlayerService';
 import { RecentPlaymatesCache, type RecentRedis } from './RecentPlaymatesCache';
+import { assignTeamsByRoom } from './teamMatchPolicy';
 
 const recentCache = new RecentPlaymatesCache(redis as unknown as RecentRedis);
 
@@ -340,11 +341,8 @@ export class RoomService {
     }
     const newPlayer = { _id: player._id, player_type: player.type as PlayerType, member_type: data.type, role: '', team: '' }
     GameLogics[game.slug].assignRole(room, newPlayer)
-    // 团队模式：6 队 × 每队 5 人，队满即不可再入座（assignRole 分不到队时返回空 team）
-    if (data.type === constant.MEMBER.TYPE.player && room.settings?.variant === 'team' && !newPlayer.team) {
-      console.log(`❌ 团队模式已满员: ${data.room_id}`);
-      return { success: false, reason: '所有队伍已满' };
-    }
+    // 团队房容量由 numbers.max = 5 统一约束（GM-snake-36）；
+    // 队伍不再进房分配，故删除旧「无 team 即满员」判断。
     // 原子追加成员（$push）而不是整数组覆盖（$set）：
     // 官方房开局时 5 个人机同时进房，整数组覆盖会互相踩掉（最后写入者赢），
     // 表现为"补了 5 个人机，房间里只剩 3 个"。
@@ -637,6 +635,78 @@ export class RoomService {
   }
 
   /**
+   * 团队合局（SB-064 / GM-snake-36）：把 3 个 5 人队房并成 1 局。
+   *
+   * - 队伍在**这一刻**按房间顺序分配（第 i 房 = SNAKE_TEAM_NAMES[i]），进房阶段不带 team；
+   * - MMatch.room_id = 首房（兼容），room_ids = 全部房间；
+   * - 三个房间一起置 playing + 同一个 match_id，成员一起置 ingame；
+   * - 参数冻结、最近同玩缓存与 startGame 同一口径。
+   *
+   * @param roomRefs 只需带 _id 的房间引用；内部按 id 重查库拿最新成员（防陈旧）
+   * @returns match_id；房间不足 / 缺员时返回空串
+   */
+  async startTeamMatch(roomRefs: Partial<IRoom>[]): Promise<string> {
+    const ids = (roomRefs || []).map(r => r._id).filter(Boolean) as string[];
+    if (ids.length < 2) return '';
+    const rooms = (await Promise.all(ids.map(id => MRoom.findById(id).lean(true)))).filter(Boolean) as IRoom[];
+    if (rooms.length < 2) return '';
+    const game = await MGame.findById(rooms[0].game_id).lean(true);
+    if (!game) return '';
+
+    const { roomIds, players } = assignTeamsByRoom(rooms);
+    const realPlayers = players.filter(m => m.member_type === constant.MEMBER.TYPE.player);
+    if (realPlayers.length < 2) return '';
+
+    const state = GameLogics[game.slug].getInitState();
+    const match_id = v7();
+    const assigned = GameLogics[game.slug]?.assignRoles(realPlayers as any);
+    const variant = rooms[0].settings?.variant as string | undefined;
+    const params = await getGameParams(game.slug);
+    const common = {
+      ...state,
+      players: realPlayers,
+      ...(variant ? { variant } : {}),
+      ...(Object.keys(params).length ? { params } : {}),
+    };
+
+    await MMatch.create({
+      _id: match_id,
+      game_id: game._id,
+      room_id: roomIds[0],
+      room_ids: roomIds,
+      status: constant.MATCH.STATUS.playing,
+      init_state: common,
+      curr_state: { ...common, curr_turn: realPlayers[0]?._id || '' },
+      players: assigned,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      stats: {},
+    });
+
+    const humanIds = realPlayers
+      .filter(p => p.player_type !== constant.PLAYER.TYPE.robot)
+      .map(p => String(p._id));
+    recentCache.touchOnGameStart(game._id, humanIds, Date.now()).catch(() => {});
+
+    await MRoom.updateMany(
+      { _id: { $in: roomIds } },
+      { $set: { match_id, status: constant.ROOM.STATUS.playing, startedAt: new Date() } },
+    );
+    await MPlayer.bulkWrite(players.map(m => ({
+      updateOne: {
+        filter: { _id: m._id },
+        update: {
+          $set: {
+            state: m.member_type === MemberType.viewer ? constant.PLAYER.STATE.watching : constant.PLAYER.STATE.ingame,
+          },
+        },
+      },
+    })));
+    console.log(`🎮 团队合局 ${roomIds.join('+')} → match ${match_id}，${realPlayers.length} 人 / ${new Set(realPlayers.map(p => p.team)).size} 队`);
+    return match_id;
+  }
+
+  /**
    * 单人游戏实时记录最高分（不结算、不改对局状态）。
    * 用 $max 写入 MPlayer.score 与分榜 MPlayer.boards[board]：
    * 排行榜展示的是"该玩法历史最高分"，中途退出也不会丢分，且重复上报幂等。
@@ -727,8 +797,10 @@ export class RoomService {
 
     // 房间回到等待；所有真人玩家与机器人统一回到 prepared（观战者保持 watching）。
     // 开局由房主点"开始游戏"控制，对局结束后直接处于已准备状态，便于再次开局。
-    await MRoom.updateOne(
-      { _id: room_id },
+    // 团队合局：3 房同 1 局，三房一起回 waiting（SB-064）；单房对局只更新首房
+    const affectedRooms = (match as any).room_ids?.length ? (match as any).room_ids as string[] : [room_id];
+    await MRoom.updateMany(
+      { _id: { $in: affectedRooms } },
       {
         $set: {
           status: constant.ROOM.STATUS.waiting,

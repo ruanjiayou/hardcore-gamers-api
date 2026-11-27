@@ -91,7 +91,10 @@ export interface IRoom {
 
 export interface IMatch {
   _id: string;
+  /** 首房（主房）：单房对局就是它；团队合局时取 room_ids[0]，保留兼容 */
   room_id: string;
+  /** 团队合局关联的全部房间 id（单房对局为空）；SB-064 */
+  room_ids?: string[];
   game_id: string;
   status: MatchStatus;
   init_state: any;

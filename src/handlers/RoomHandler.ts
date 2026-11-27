@@ -18,6 +18,7 @@ import config from '../config';
 import { TicketTool } from '../utils';
 import { settleMove, findTimeout, clockSnapshot, normalizeTimeControl, type MatchTimeControl } from '../utils/timeControl';
 import { canDisbandRoom, canStartGame, canUpdateSettings } from '../utils/roomPolicy';
+import { teamMatchService } from '../services/TeamMatchService';
 import _ from 'lodash';
 
 const ticketHelper = new TicketTool(config.secret);
@@ -156,6 +157,28 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
       return callback(false, check.reason);
     }
     try {
+      // 团队房（SB-064）：房主点开始 = 加入合局池；凑齐 3 房才建局。
+      // 合局由 TeamMatchService 向 3 房发 room:game-start 并 spawn，这里只回状态。
+      const variant = room.settings?.variant as string | undefined;
+      if (variant === 'team') {
+        const result = await teamMatchService.markReady(room as any);
+        if (!result.match_id) {
+          callback(true, `已就绪，还需 ${result.need} 支队伍`);
+          return;
+        }
+        callback(true);
+        // 合局的机器人 socket 可能还没进 room 频道：按 user 频道补发 game-start
+        const joinedRooms = await Promise.all(result.room_ids.map(id => MRoom.findById(id).lean(true)));
+        const robotIds = joinedRooms.filter(Boolean).flatMap((r: any) =>
+          (r.members || []).filter((m: any) => m.player_type === constant.PLAYER.TYPE.robot).map((m: any) => m._id));
+        if (robotIds.length) {
+          const robots = await MPlayer.find({ _id: { $in: robotIds } }, { user_id: 1 }).lean(true);
+          const payload = { room_id, match_id: result.match_id, timestamp: Date.now() };
+          robots.forEach((r: any) => io.to(`user:${r.user_id}`).emit('room:game-start', payload));
+        }
+        return;
+      }
+
       const match_id = await roomService.startGame(room_id);
       if (!match_id) {
         return callback(false, '开局失败');
@@ -179,7 +202,6 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
 
       // 实时多人游戏（贪吃蛇多人模式）：启动服务端权威 tick 循环
       const startedGame = await MGame.findById(room.game_id, { slug: 1 }).lean(true);
-      const variant = room.settings?.variant as string | undefined;
       if (startedMatch && startedGame && GameLogics[startedGame.slug]?.isRealtimeVariant?.(variant)) {
         snakeRuntimeService.spawn(startedMatch as any);
       }
@@ -590,6 +612,8 @@ export function setupRoomHandlers(io: Server, socket: AuthSocket, user_id: strin
     }
     const destroyed = await roomService.destroyRoom(data.room_id);
     if (destroyed) {
+      // 团队房解散：从合局就绪池移除，避免其他 2 房永远等不到第 3 房
+      teamMatchService.cancel(room.game_id, data.room_id);
       // 操作者先退出频道（避免广播+ack 双重处理），再通知房间内其他人
       socket.leave(`room:${room._id}`);
       io.to(`room:${room._id}`).emit('lobby:room-destroyed', {});

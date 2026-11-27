@@ -41,10 +41,16 @@ import { seedAll } from './seed';
 import { timeControlService } from './services/TimeControlService';
 import { snakeRuntimeService } from './services/SnakeRuntimeService';
 import { roomService } from './services/RoomService';
+import {
+  teamMatchService,
+  roomServiceProxy,
+  snakeRuntimeProxy,
+  matchModelProxy,
+} from './services/TeamMatchService';
 import { matchQueue } from './services/MatchQueueService';
 import { ensureRoomBots } from './services/RobotService';
 import { SNAKE_ENDLESS_BOT_COUNT } from './seed.data';
-import { MGame, MPlayer, MRoom } from './models';
+import { MGame, MMatch, MPlayer, MRoom } from './models';
 import constant from './constant';
 import { pick } from 'lodash';
 
@@ -393,16 +399,25 @@ server.listen(config.port, async () => {
     console.error('❌ 僵尸对局清理失败（服务继续启动）:', error);
   }
 
+  // 团队合局编排的延迟依赖注入（避免 RoomService ↔ TeamMatchService 循环 import）
+  roomServiceProxy.startTeamMatch = (rooms) => roomService.startTeamMatch(rooms);
+  snakeRuntimeProxy.spawn = (match) => snakeRuntimeService.spawn(match);
+  matchModelProxy.findById = (id) => MMatch.findById(id);
+  teamMatchService.setIO(io);
+
   // 贪吃蛇运行时：服务端权威 tick。结算走 roomService.gameover（分榜 endless/team，按单局最高分）
-  snakeRuntimeService.start(io, async ({ room_id, match_id, winner, scores, variant }) => {
+  snakeRuntimeService.start(io, async ({ room_id, room_ids, match_id, winner, scores, variant }) => {
     const board = variant === 'endless' ? 'endless' : 'team';
     // 两种玩法都按"该玩法最高分"记录（无尽跨重生、多人单局），不累加
     await roomService.gameover(room_id, match_id, winner, scores, 'max', board);
     if (variant === 'team') {
       const winnerPlayer = winner ? await MPlayer.findById(winner).lean(true) : null;
-      io.to(`room:${room_id}`).emit('room:game-over', winner
+      // 团队合局：3 房同 1 局，三房都要收到结算（SB-064）；单房对局 room_ids 为空则只发首房
+      const rooms = room_ids?.length ? room_ids : [room_id];
+      const payload = winner
         ? { ...pick(winnerPlayer || {}, ['_id', 'nickname']), scores }
-        : { _id: '', nickname: '', draw: true, scores });
+        : { _id: '', nickname: '', draw: true, scores };
+      for (const rid of rooms) io.to(`room:${rid}`).emit('room:game-over', payload);
     }
     console.log(`🐍 贪吃蛇 ${variant} 结束 match=${match_id} winner=${winner || '—'}`);
   });

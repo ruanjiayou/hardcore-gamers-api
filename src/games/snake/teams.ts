@@ -1,9 +1,9 @@
 /**
  * 贪吃蛇「团队模式」的队伍配置（纯数据，无 IO）。
  *
- * 团队模式：最多 6 支队伍，每队最多 5 人（合计 30 人同场）。
- * - 队伍归属由房间的 seats 决定（每支队伍一个座位块 + 容量），
- *   玩家进房时按"当前人数最少的队伍"自动均衡分队；
+ * 团队模式：3 支队伍，每队最多 5 人（合计 15 人同场）。
+ * - 一个团队房 = 一支队伍（最多 5 人）；3 个队房凑齐后合为 1 局，
+ *   队伍归属在合局时按房间顺序分配，进房阶段成员不带 team。
  * - 队友之间不会互相碰撞致死（同队豁免），因此 5 人一队可以互相掩护；
  * - 一支队伍全员出局即视为该队淘汰；只剩一支队伍时该队获胜。
  *
@@ -16,11 +16,11 @@
 /** 每队人数上限 */
 export const SNAKE_TEAM_SIZE = 5;
 
-/** 队伍数量上限 */
-export const SNAKE_TEAM_COUNT = 6;
+/** 队伍数量上限：3 个队房合 1 局 */
+export const SNAKE_TEAM_COUNT = 3;
 
-/** 队伍名（同时是队伍标识，房间 seats 与对局数据都用它） */
-export const SNAKE_TEAM_NAMES = ['红队', '蓝队', '黄队', '绿队', '紫队', '橙队'];
+/** 队伍名（同时是队伍标识，合局时按房间顺序分配） */
+export const SNAKE_TEAM_NAMES = ['红队', '蓝队', '黄队'];
 
 /** 房间座位：[{ team, size }]，rooms.seats 用这个形态 */
 export function snakeTeamSeats(): { team: string; size: number }[] {
@@ -32,5 +32,5 @@ export function snakeTeamRoles(): { name: string; size: number }[] {
   return SNAKE_TEAM_NAMES.map(name => ({ name, size: SNAKE_TEAM_SIZE }));
 }
 
-/** 团队模式房间人数上限：6 队 × 5 人 */
+/** 团队模式全场人数上限：3 队 × 5 人（单房上限是 SNAKE_TEAM_SIZE） */
 export const SNAKE_TEAM_TOTAL = SNAKE_TEAM_COUNT * SNAKE_TEAM_SIZE;

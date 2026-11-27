@@ -37,6 +37,8 @@ import { playerService } from './PlayerService';
 
 export interface SnakeFinishInfo {
   room_id: string;
+  /** 团队合局的全部房间；单房对局为空 */
+  room_ids?: string[];
   match_id: string;
   /** 胜者 player_id；'' 表示平局/无尽模式无胜者 */
   winner: string;
@@ -49,7 +51,10 @@ export type SnakeFinishHook = (info: SnakeFinishInfo) => Promise<void> | void;
 
 interface Runtime {
   match_id: string;
+  /** 首房（兼容单房对局与日志） */
   room_id: string;
+  /** 团队合局关联的全部房间：快照/结算广播到每一房；单房对局为空 */
+  room_ids?: string[];
   variant: SnakeVariant;
   state: SnakeState;
   /** 对局初始状态（players/variant 等），落库时与快照合并 */
@@ -150,6 +155,12 @@ function toFoodDTO(f: SnakeFoodItem) {
 export interface RuntimeOwner {
   match_id: string;
   room_id: string;
+  room_ids?: string[];
+}
+
+/** 运行时覆盖的房间列表（合局 = 全部房间，单房 = 首房） */
+export function runtimeRooms(rt: RuntimeOwner): string[] {
+  return rt.room_ids?.length ? rt.room_ids : [rt.room_id];
 }
 
 /**
@@ -168,7 +179,7 @@ export function pickStaleRuntime(
   new_match_id: string,
 ): string | null {
   for (const rt of list) {
-    if (rt.room_id !== room_id) continue;
+    if (!runtimeRooms(rt).includes(room_id)) continue;
     if (rt.match_id === new_match_id) continue;
     return rt.match_id;
   }
@@ -245,16 +256,17 @@ export class SnakeRuntimeService {
     const stale = await MMatch.find({
       game_id: 'snake',
       status: constant.MATCH.STATUS.playing,
-    }, { _id: 1, room_id: 1 }).lean(true);
+    }, { _id: 1, room_id: 1, room_ids: 1 }).lean(true);
     for (const match of stale) {
       await MMatch.updateOne(
         { _id: match._id, status: constant.MATCH.STATUS.playing },
         { $set: { status: constant.MATCH.STATUS.gameover, updatedAt: new Date() } },
       );
-      if (match.room_id) {
+      const rooms = match.room_ids?.length ? match.room_ids : match.room_id ? [match.room_id] : [];
+      if (rooms.length) {
         // 已解散（软删）的房间不能借重启"复活"，否则会冒出列表里看不到的幽灵房
-        await MRoom.updateOne(
-          { _id: match.room_id, status: { $ne: constant.ROOM.STATUS.deleted } },
+        await MRoom.updateMany(
+          { _id: { $in: rooms }, status: { $ne: constant.ROOM.STATUS.deleted } },
           { $set: { status: constant.ROOM.STATUS.waiting, match_id: '', updatedAt: new Date() } },
         );
       }
@@ -263,7 +275,7 @@ export class SnakeRuntimeService {
   }
 
   /** 开局：按对局玩家建蛇并启动 tick 循环 */
-  spawn(match: { _id: string; room_id: string; curr_state: any }) {
+  spawn(match: { _id: string; room_id: string; room_ids?: string[]; curr_state: any }) {
     if (!this.io) return;
     if (this.runtimes.has(match._id)) return;
 
@@ -311,6 +323,7 @@ export class SnakeRuntimeService {
     const rt: Runtime = {
       match_id: match._id,
       room_id: match.room_id,
+      room_ids: match.room_ids?.length ? [...match.room_ids] : undefined,
       variant,
       state,
       base: match.curr_state || {},
@@ -518,7 +531,7 @@ export class SnakeRuntimeService {
 
   /** 断线兜底：只知道房间 id 时也能把该玩家的分数结算掉 */
   async syncScoreByRoom(room_id: string, player_id: string): Promise<boolean> {
-    const rt = [...this.runtimes.values()].find(r => r.room_id === room_id);
+    const rt = [...this.runtimes.values()].find(r => runtimeRooms(r).includes(room_id));
     if (!rt) return false;
     await this.commitScore(rt, player_id);
     return true;
@@ -560,6 +573,7 @@ export class SnakeRuntimeService {
     try {
       await this.hook?.({
         room_id: rt.room_id,
+        room_ids: rt.room_ids,
         match_id: rt.match_id,
         winner: rt.state.winner,
         scores: snakeScores(rt.state),
@@ -584,7 +598,7 @@ export class SnakeRuntimeService {
    */
   hasByRoom(room_id: string): boolean {
     for (const rt of this.runtimes.values()) {
-      if (rt.room_id === room_id) return true;
+      if (runtimeRooms(rt).includes(room_id)) return true;
     }
     return false;
   }
@@ -598,7 +612,7 @@ export class SnakeRuntimeService {
   stopByRoom(room_id: string): number {
     let stopped = 0;
     for (const rt of [...this.runtimes.values()]) {
-      if (rt.room_id !== room_id) continue;
+      if (!runtimeRooms(rt).includes(room_id)) continue;
       if (rt.timer) clearTimeout(rt.timer);
       this.runtimes.delete(rt.match_id);
       stopped++;
@@ -640,6 +654,7 @@ export class SnakeRuntimeService {
       try {
         await this.hook?.({
           room_id: rt.room_id,
+          room_ids: rt.room_ids,
           match_id: rt.match_id,
           winner: rt.state.winner,
           scores: snakeScores(rt.state),
@@ -657,7 +672,11 @@ export class SnakeRuntimeService {
   private broadcast(rt: Runtime) {
     // 每 200 tick（约 10s）对齐一次全量：偶发丢包/客户端增删错位也能自愈
     if (rt.state.tick % 200 === 0) rt.needFull = 1;
-    this.io?.to(`room:${rt.room_id}`).emit('room:player-action', { snake: this.toSnapshot(rt) });
+    const snapshot = { snake: this.toSnapshot(rt) };
+    // 团队合局 3 房同 1 局：三房都要收到同一份快照（SB-064）
+    for (const roomId of runtimeRooms(rt)) {
+      this.io?.to(`room:${roomId}`).emit('room:player-action', snapshot);
+    }
   }
 
   private async persist(rt: Runtime) {

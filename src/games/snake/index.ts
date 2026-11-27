@@ -1,7 +1,6 @@
 import { IMatch, IMember, IPlayer, IRoom } from "../../types";
 import { isSnakeAngle } from "./rules";
 import { snakeRuntimeService } from "../../services/SnakeRuntimeService";
-import { SNAKE_TEAM_NAMES, SNAKE_TEAM_SIZE } from "./teams";
 
 /**
  * 贪吃蛇（一个游戏两种玩法，都是房间制 + 服务端权威实时推进）。
@@ -42,37 +41,11 @@ export default class GameSnake {
 
   /**
    * 每个玩家一条蛇，角色统一 snake。
-   * 团队模式额外分配队伍：按"当前人数最少的队伍"均衡分队，队满则不入座。
+   * 团队房（GM-snake-36）：进房**不分队**——一个房 = 一队，队伍在 3 房合局时
+   * 由服务端按房间顺序统一分配（SB-064）。这里不再写 member.team。
    */
-  static assignRole(room: IRoom, player: IMember) {
+  static assignRole(_room: IRoom, player: IMember) {
     player.role = 'snake';
-    if (room?.settings?.variant === 'team') {
-      player.team = GameSnake.pickTeam(room);
-    }
-  }
-
-  /**
-   * 均衡分队：挑人数最少且未满的队伍。
-   * 房间成员里已带 team 的算作该队人数；无队可选时返回空串（该玩家按无队伍处理）。
-   */
-  static pickTeam(room: IRoom): string {
-    const members = (room?.members || []).filter((m: any) => m.member_type === 'player' && m.team);
-    const counts = new Map<string, number>();
-    for (const name of SNAKE_TEAM_NAMES) counts.set(name, 0);
-    for (const m of members as any[]) {
-      if (counts.has(m.team)) counts.set(m.team, (counts.get(m.team) || 0) + 1);
-    }
-    let best = '';
-    let bestCount = Number.MAX_SAFE_INTEGER;
-    for (const name of SNAKE_TEAM_NAMES) {
-      const c = counts.get(name) || 0;
-      if (c >= SNAKE_TEAM_SIZE) continue;
-      if (c < bestCount) {
-        bestCount = c;
-        best = name;
-      }
-    }
-    return best;
   }
 
   static assignRoles(players: IPlayer[]) {

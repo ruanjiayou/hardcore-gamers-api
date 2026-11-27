@@ -16,7 +16,7 @@ describe('种子数据一致性', () => {
         expect(g.numbers.min).toBe(1);
         expect(g.numbers.max).toBe(1);
       } else if (g.slug === 'snake') {
-        // 两种玩法都是房间制：无尽 1–10 人同图、团队 6 队×5 人（最多 30 人）淘汰
+        // 两种玩法都是房间制：无尽 1–10 人同图、团队每房 1 队 5 人（3 房合局共 15 人）
         expect(g.mode).toBe('room');
         expect(g.numbers.max).toBe(10);
         expect(g.variants?.map(v => v.key).sort()).toEqual(['endless', 'team']);
@@ -27,20 +27,17 @@ describe('种子数据一致性', () => {
         // 无尽是常驻竞技场玩法（arena=true）：官方桌常驻 playing，玩家随时进出
         expect(endless?.arena).toBe(true);
         expect(team?.mode).toBe('room');
-        expect(team?.numbers?.max).toBe(30);
+        expect(team?.numbers?.max).toBe(5);
         // 团队玩法不是竞技场（要等房主开局）
         expect(team?.arena).toBeUndefined();
         expect(g.boards?.map(b => b.key).sort()).toEqual(['endless', 'team']);
-        // 团队模式：6 队，每队 5 人
+        // 团队模式：3 队，每队 5 人（GM-snake-36）
         expect(g.role_config).toEqual({
           mode: 'team',
           roles: [
             { name: '红队', size: 5 },
             { name: '蓝队', size: 5 },
             { name: '黄队', size: 5 },
-            { name: '绿队', size: 5 },
-            { name: '紫队', size: 5 },
-            { name: '橙队', size: 5 },
           ],
         });
         expect(team?.teams).toEqual(g.role_config.roles);
@@ -96,11 +93,11 @@ describe('种子数据一致性', () => {
       .forEach(r => expect(r.settings?.arena).toBe(true));
     snakeRooms.filter(r => r.settings?.variant === 'team')
       .forEach(r => expect(r.settings?.arena).toBeUndefined());
-    // 团队桌按 6 队 × 5 人配置，并带队伍座位表
+    // 团队房：一间 = 一队 5 人（GM-snake-36），3 间合 1 局；座位表同步缩为 3 队
     snakeRooms.filter(r => r.settings?.variant === 'team')
       .forEach(r => {
-        expect(r.numbers).toEqual({ min: 2, max: 30 });
-        expect(r.seats?.length).toBe(6);
+        expect(r.numbers).toEqual({ min: 2, max: 5 });
+        expect(r.seats?.length).toBe(3);
         expect(r.seats?.every(s => s.size === 5)).toBe(true);
       });
   });

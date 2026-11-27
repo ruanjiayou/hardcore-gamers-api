@@ -75,6 +75,7 @@ export const MMatch = mongoose.model<IMatch>('matches', new mongoose.Schema({
   _id: String,
   game_id: String,
   room_id: String,
+  room_ids: [String],
   status: String,
   init_state: mongoose.SchemaTypes.Mixed,
   curr_state: mongoose.SchemaTypes.Mixed,
