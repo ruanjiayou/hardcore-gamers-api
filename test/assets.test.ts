@@ -21,6 +21,12 @@ describe('SB-066 资源清单只含单个游戏', () => {
     expect(ts).not.toContain("router.get('/manifest.json'");
   });
 
+  test('UI-112 含玩家装备的清单不走 HTTP 缓存', () => {
+    const ts = read('src/controller/assets.ts');
+    expect((ts.match(/Cache-Control', 'no-store'/g) || []).length).toBeGreaterThanOrEqual(2);
+    expect(ts).not.toContain('public, max-age=60');
+  });
+
   test('清单没有 pack 字段，只包含该游戏的资源分组', () => {
     const m = snake();
     expect((m as any).pack).toBeUndefined();

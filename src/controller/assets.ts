@@ -23,8 +23,8 @@ router.get('/:game/manifest.json', async (req, res) => {
     const game = gameOf(req);
     const user = userFromRequest(req);
     const data = await assetsService.buildManifest({ game, userId: user?._id as string | undefined });
-    // 清单按 revision 失效；加载页读它来判断资源缓存是否过期
-    res.setHeader('Cache-Control', 'public, max-age=60');
+    // UI-112：清单含玩家级装备，属于用户专属响应，不能走浏览器/代理 HTTP 缓存
+    res.setHeader('Cache-Control', 'no-store');
     res.json({ code: 0, data });
   } catch (err: any) {
     res.json({ code: -1, message: err?.message || '获取资源清单失败' });
@@ -36,6 +36,7 @@ router.get('/:game/skins', async (req, res) => {
     const game = gameOf(req);
     const user = userFromRequest(req);
     const manifest = await assetsService.buildManifest({ game, userId: user?._id as string | undefined });
+    res.setHeader('Cache-Control', 'no-store');
     res.json({ code: 0, data: manifest.skins });
   } catch (err: any) {
     res.json({ code: -1, message: err?.message || '获取皮肤列表失败' });
