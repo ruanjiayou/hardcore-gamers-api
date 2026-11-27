@@ -25,6 +25,7 @@ import redis from './utils/redis'
 import gameController from './controller/game'
 import oauthController from './controller/oauth'
 import userController from './controller/user'
+import playerController from './controller/player'
 import friendController, { setFriendIO } from './controller/friend'
 import matchController from './controller/match'
 import voicePackController from './controller/voicePack'
@@ -156,6 +157,7 @@ const ROUTES: [prefix: string, router: any, name: string][] = [
   ['/api/games', gameController, 'game'],
   ['/api/oauth', oauthController, 'oauth'],
   ['/api/users', userController, 'user'],
+  ['/api/players', playerController, 'player'],
   ['/api/friends', friendController, 'friend'],
   ['/api/matches', matchController, 'match'],
   ['/api/voice-packs', voicePackController, 'voicePack'],
